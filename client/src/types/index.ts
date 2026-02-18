@@ -2,7 +2,7 @@
 export interface AIModelConfig {
   id: string;
   name: string;
-  provider: 'openai' | 'claude' | 'doubao' | 'custom';
+  provider: 'openai' | 'claude' | 'doubao' | 'qwen' | 'kimi' | 'deepseek' | 'zhipu' | 'custom';
   apiKey: string;
   baseUrl: string;
   model: string;
