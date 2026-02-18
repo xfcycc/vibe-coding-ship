@@ -1,19 +1,24 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import {
   Layout, Typography, Button, Space, Input, message, Empty, Steps, Tooltip,
-  Card, Tag, Drawer, Tabs, Alert, Collapse,
+  Card, Tag, Drawer, Collapse,
 } from 'antd';
 import {
-  PlayCircleOutlined, StopOutlined, ReloadOutlined, EditOutlined,
+  PlayCircleOutlined, StopOutlined, EditOutlined,
   LeftOutlined, RightOutlined, FileTextOutlined, CheckCircleOutlined,
   MenuFoldOutlined, MenuUnfoldOutlined, EyeOutlined,
-  CopyOutlined, SwapOutlined, BulbOutlined, LoadingOutlined,
+  CopyOutlined, BulbOutlined, LoadingOutlined,
+  ThunderboltOutlined, RobotOutlined,
+  ExperimentOutlined, WarningOutlined, RollbackOutlined,
 } from '@ant-design/icons';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useNavigate } from 'react-router-dom';
 import { useProject } from '../../contexts/ProjectContext';
-import { streamAIDirect, streamFollowUpDirect } from '../../services/aiDirect';
+import {
+  streamAIDirect, streamFollowUpDirect,
+  streamMemorySummaryDirect, aiExtractFromDoc,
+} from '../../services/aiDirect';
 import { configStorage } from '../../services/storage';
 import WaitingAreaPanel from '../../components/WaitingArea/WaitingAreaPanel';
 import DiffViewerComponent from '../../components/DiffViewer/DiffViewerComponent';
@@ -22,11 +27,62 @@ import { extractStates, extractTables } from '../../utils/docExtractor';
 import { v4 as uuidv4 } from 'uuid';
 
 const { Content, Sider } = Layout;
-const { Title, Text, Paragraph } = Typography;
+const { Title, Text } = Typography;
+
+type WorkflowPhase = 'idle' | 'thinking' | 'generating' | 'extracting' | 'summarizing';
+
+const PHASE_CONFIG: Record<WorkflowPhase, { className: string; icon: React.ReactNode; label: string; subtext: string }> = {
+  idle: { className: '', icon: null, label: '', subtext: '' },
+  thinking: {
+    className: 'phase-thinking',
+    icon: <BulbOutlined style={{ color: '#faad14' }} />,
+    label: 'AI 正在深度思考...',
+    subtext: '模型正在分析上下文并规划文档结构',
+  },
+  generating: {
+    className: 'phase-generating',
+    icon: <ThunderboltOutlined style={{ color: '#52c41a' }} />,
+    label: 'AI 正在生成文档...',
+    subtext: '内容实时输出中，请耐心等待',
+  },
+  extracting: {
+    className: 'phase-extracting',
+    icon: <ExperimentOutlined style={{ color: '#722ed1' }} />,
+    label: '正在从文档提取状态和表结构...',
+    subtext: '使用 AI 智能识别业务数据',
+  },
+  summarizing: {
+    className: 'phase-summarizing',
+    icon: <RobotOutlined style={{ color: '#13c2c2' }} />,
+    label: '正在更新记忆摘要...',
+    subtext: '总结当前步骤核心信息到记忆区',
+  },
+};
+
+const PhaseIndicator: React.FC<{ phase: WorkflowPhase; isStreaming: boolean }> = ({ phase, isStreaming }) => {
+  if (phase === 'idle') return null;
+  const config = PHASE_CONFIG[phase];
+  return (
+    <div style={{ padding: '0 20px' }}>
+      <div className={`phase-indicator ${config.className}`}>
+        <div className="phase-icon">{config.icon}</div>
+        <div style={{ flex: 1 }}>
+          <div className="phase-text">{config.label}</div>
+          <div className="phase-subtext">{config.subtext}</div>
+        </div>
+      </div>
+      {isStreaming && (
+        <div className="progress-bar-container" style={{ marginTop: 4, marginBottom: 4 }}>
+          <div className="progress-bar-shimmer" />
+        </div>
+      )}
+    </div>
+  );
+};
 
 const WorkflowPage: React.FC = () => {
   const navigate = useNavigate();
-  const { project, template, dispatch, getPrevDocsContent } = useProject();
+  const { project, template, dispatch, getPrevDocsContent, getMemorySummary } = useProject();
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamContent, setStreamContent] = useState('');
   const [reasoningMap, setReasoningMap] = useState<Record<number, string>>({});
@@ -38,6 +94,9 @@ const WorkflowPage: React.FC = () => {
   const [showDiff, setShowDiff] = useState(false);
   const [oldContent, setOldContent] = useState('');
   const [newContent, setNewContent] = useState('');
+  const [currentPhase, setCurrentPhase] = useState<WorkflowPhase>('idle');
+  const [memorySummaryStream, setMemorySummaryStream] = useState('');
+  const [isMemoryStreaming, setIsMemoryStreaming] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const streamContentRef = useRef('');
@@ -107,12 +166,11 @@ const WorkflowPage: React.FC = () => {
   const displayContent = isStreaming ? streamContent : (currentDoc?.content || '');
   const currentReasoning = isStreaming ? streamReasoningRef.current : (reasoningMap[currentStep] || '');
 
-  const autoExtractFromDoc = useCallback((docContent: string, node: typeof currentNode) => {
+  const doAIExtract = async (docContent: string, node: typeof currentNode, apiConfig: any, signal: AbortSignal) => {
     if (!node || !template || !docContent) return;
 
     const relatedAreas = node.relatedWaitAreas || [];
     const waitAreas = template.waitAreas || [];
-
     const hasStateArea = relatedAreas.some(areaId => {
       const area = waitAreas.find(w => w.waitAreaId === areaId);
       return area?.type === 'stateManagement' && area.syncRule === 'auto';
@@ -122,30 +180,89 @@ const WorkflowPage: React.FC = () => {
       return area?.type === 'tableManagement' && area.syncRule === 'auto';
     });
 
+    if (!hasStateArea && !hasTableArea) return;
+
+    // Phase 1: Fast regex extraction
+    const regexStates = hasStateArea ? extractStates(docContent) : [];
+    const regexTables = hasTableArea ? extractTables(docContent) : [];
+
+    // Phase 2: AI extraction (may fail, non-blocking)
+    let aiStates: Array<{ stateName: string; stateValues: string[]; description: string }> = [];
+    let aiTables: Array<{ tableName: string; description: string; fields: Array<{ fieldName: string; fieldType: string; description: string; isRequired: boolean }> }> = [];
+    try {
+      const aiResult = await aiExtractFromDoc(docContent, apiConfig, signal);
+      aiStates = aiResult.states;
+      aiTables = aiResult.tables;
+    } catch {
+      // AI extraction failed, fall back to regex only
+    }
+
+    // Merge results: regex first, then AI adds anything regex missed
+    const existingStateNames = new Set((project?.states || []).map(s => s.stateName));
+    const addedStateNames = new Set<string>();
     let stateCount = 0;
     let tableCount = 0;
 
     if (hasStateArea) {
-      const extracted = extractStates(docContent);
-      if (extracted.length > 0) {
-        const existingNames = new Set((project?.states || []).map(s => s.stateName));
-        const newStates = extracted.filter(s => !existingNames.has(s.stateName));
-        for (const s of newStates) {
-          dispatch({ type: 'ADD_STATE', payload: { ...s, relatedDocs: [node.nodeId] } });
+      // Add regex-extracted states
+      for (const s of regexStates) {
+        if (!existingStateNames.has(s.stateName) && !addedStateNames.has(s.stateName)) {
+          dispatch({
+            type: 'ADD_STATE',
+            payload: { ...s, relatedDocs: [node.nodeId] },
+          });
+          addedStateNames.add(s.stateName);
+          stateCount++;
         }
-        stateCount = newStates.length;
+      }
+      // Add AI-extracted states (only those not already found by regex)
+      for (const s of aiStates) {
+        if (!existingStateNames.has(s.stateName) && !addedStateNames.has(s.stateName)) {
+          dispatch({
+            type: 'ADD_STATE',
+            payload: {
+              id: uuidv4(), stateName: s.stateName, stateValues: s.stateValues,
+              description: s.description, relatedDocs: [node.nodeId], relatedTables: [],
+            },
+          });
+          addedStateNames.add(s.stateName);
+          stateCount++;
+        }
       }
     }
 
+    const existingTableNames = new Set((project?.tables || []).map(t => t.tableName));
+    const addedTableNames = new Set<string>();
+
     if (hasTableArea) {
-      const extracted = extractTables(docContent);
-      if (extracted.length > 0) {
-        const existingNames = new Set((project?.tables || []).map(t => t.tableName));
-        const newTables = extracted.filter(t => !existingNames.has(t.tableName));
-        for (const t of newTables) {
-          dispatch({ type: 'ADD_TABLE', payload: { ...t, relatedDocs: [node.nodeId] } });
+      // Add regex-extracted tables
+      for (const t of regexTables) {
+        if (!existingTableNames.has(t.tableName) && !addedTableNames.has(t.tableName)) {
+          dispatch({
+            type: 'ADD_TABLE',
+            payload: { ...t, relatedDocs: [node.nodeId] },
+          });
+          addedTableNames.add(t.tableName);
+          tableCount++;
         }
-        tableCount = newTables.length;
+      }
+      // Add AI-extracted tables (only those not already found by regex)
+      for (const t of aiTables) {
+        if (!existingTableNames.has(t.tableName) && !addedTableNames.has(t.tableName)) {
+          dispatch({
+            type: 'ADD_TABLE',
+            payload: {
+              id: uuidv4(), tableName: t.tableName, description: t.description,
+              fields: t.fields.map(f => ({
+                id: uuidv4(), fieldName: f.fieldName, fieldType: f.fieldType,
+                description: f.description, isRequired: f.isRequired, relatedState: '',
+              })),
+              relatedDocs: [node.nodeId],
+            },
+          });
+          addedTableNames.add(t.tableName);
+          tableCount++;
+        }
       }
     }
 
@@ -153,11 +270,33 @@ const WorkflowPage: React.FC = () => {
       const parts: string[] = [];
       if (stateCount > 0) parts.push(`${stateCount} 个状态`);
       if (tableCount > 0) parts.push(`${tableCount} 个表结构`);
-      message.success(`已自动提取 ${parts.join('、')} 到等待区`);
+      message.success(`已提取 ${parts.join('、')} 到等待区（AI双重提取）`);
     }
-  }, [template, project, dispatch]);
+  };
 
-  const handleGenerate = useCallback(async () => {
+  const doMemorySummary = async (stepName: string, content: string, apiConfig: any, signal: AbortSignal) => {
+    const prevSummary = getMemorySummary(currentStep);
+    setIsMemoryStreaming(true);
+    setMemorySummaryStream('');
+    let summaryText = '';
+
+    await streamMemorySummaryDirect(stepName, content, prevSummary, apiConfig, {
+      onChunk: (chunk) => {
+        summaryText += chunk;
+        setMemorySummaryStream(summaryText);
+      },
+      onDone: () => {
+        dispatch({
+          type: 'SET_MEMORY_SUMMARY',
+          payload: { stepIndex: currentStep, content: summaryText, createdAt: new Date().toISOString() },
+        });
+        setIsMemoryStreaming(false);
+      },
+      onError: () => { setIsMemoryStreaming(false); },
+    }, signal);
+  };
+
+  const handleGenerate = async () => {
     if (!currentPrompt || !currentNode) return;
 
     const apiConfig = configStorage.getDefault();
@@ -176,14 +315,18 @@ const WorkflowPage: React.FC = () => {
     setReasoningMap(prev => ({ ...prev, [currentStep]: '' }));
     setShowFollowUp(false);
     setShowDiff(false);
+    setCurrentPhase('thinking');
 
     dispatch({
       type: 'UPDATE_DOCUMENT',
-      payload: { nodeId: currentNode.nodeId, updates: { status: 'generating' } },
+      payload: { nodeId: currentNode.nodeId, updates: { status: 'generating', needsRegeneration: false } },
     });
 
+    setCurrentPhase('thinking');
     let fullContent = '';
     let fullReasoning = '';
+    let hasContent = false;
+
     await streamAIDirect(
       {
         promptTemplate: currentPrompt.promptContent,
@@ -191,10 +334,17 @@ const WorkflowPage: React.FC = () => {
         projectVision: project.info.projectVision,
         userInput: currentDoc?.userInput || '',
         prevDocs: getPrevDocsContent(currentStep),
+        memorySummary: getMemorySummary(currentStep),
+        states: project.states,
+        tables: project.tables,
       },
       apiConfig,
       {
         onChunk: (chunk) => {
+          if (!hasContent) {
+            hasContent = true;
+            setCurrentPhase('generating');
+          }
           fullContent += chunk;
           streamContentRef.current = fullContent;
           scheduleStreamUpdate();
@@ -206,28 +356,11 @@ const WorkflowPage: React.FC = () => {
         },
         onDone: () => {
           flushStreamContent();
-          setIsStreaming(false);
-          abortRef.current = null;
-          const newVersion = { versionId: uuidv4(), content: fullContent, createdAt: new Date().toISOString() };
-          const versions = [...(currentDoc?.versions || []), newVersion].slice(-3);
-          dispatch({
-            type: 'UPDATE_DOCUMENT',
-            payload: {
-              nodeId: currentNode.nodeId,
-              updates: {
-                content: fullContent,
-                status: 'completed',
-                versions,
-                currentVersionIndex: versions.length - 1,
-              },
-            },
-          });
-          autoExtractFromDoc(fullContent, currentNode);
-          setShowFollowUp(true);
         },
         onError: (err) => {
           flushStreamContent();
           setIsStreaming(false);
+          setCurrentPhase('idle');
           abortRef.current = null;
           message.error(err);
           dispatch({
@@ -238,7 +371,39 @@ const WorkflowPage: React.FC = () => {
       },
       abort.signal
     );
-  }, [currentPrompt, currentNode, currentDoc, currentStep, project, dispatch, getPrevDocsContent, scheduleStreamUpdate, flushStreamContent, autoExtractFromDoc]);
+
+    if (abort.signal.aborted || !fullContent) {
+      setIsStreaming(false);
+      setCurrentPhase('idle');
+      return;
+    }
+
+    // Save the document
+    const newVersion = { versionId: uuidv4(), content: fullContent, createdAt: new Date().toISOString() };
+    const versions = [...(currentDoc?.versions || []), newVersion].slice(-3);
+    dispatch({
+      type: 'UPDATE_DOCUMENT',
+      payload: {
+        nodeId: currentNode.nodeId,
+        updates: { content: fullContent, status: 'completed', versions, currentVersionIndex: versions.length - 1 },
+      },
+    });
+
+    // Phase 3: AI Extraction
+    if (currentNode.relatedWaitAreas.length > 0) {
+      setCurrentPhase('extracting');
+      await doAIExtract(fullContent, currentNode, apiConfig, abort.signal);
+    }
+
+    // Phase 4: Memory Summary
+    setCurrentPhase('summarizing');
+    await doMemorySummary(currentNode.docName, fullContent, apiConfig, abort.signal);
+
+    setIsStreaming(false);
+    setCurrentPhase('idle');
+    abortRef.current = null;
+    setShowFollowUp(true);
+  };
 
   const handleStop = () => {
     if (abortRef.current) {
@@ -246,10 +411,12 @@ const WorkflowPage: React.FC = () => {
       abortRef.current = null;
     }
     flushStreamContent();
+    setIsStreaming(false);
+    setCurrentPhase('idle');
   };
 
-  const handleFollowUp = useCallback(async () => {
-    if (!followUpInput.trim() || !currentDoc?.content) return;
+  const handleFollowUp = async () => {
+    if (!followUpInput.trim() || !currentDoc?.content || !currentNode) return;
 
     const apiConfig = configStorage.getDefault();
     if (!apiConfig) {
@@ -266,17 +433,21 @@ const WorkflowPage: React.FC = () => {
     setOldContent(currentDoc.content);
     setStreamContent('');
     setReasoningMap(prev => ({ ...prev, [currentStep]: '' }));
+    setCurrentPhase('thinking');
 
     let fullContent = '';
     let fullReasoning = '';
+    let hasContent = false;
+
     await streamFollowUpDirect(
-      {
-        currentContent: currentDoc.content,
-        userInstruction: followUpInput.trim(),
-      },
+      { currentContent: currentDoc.content, userInstruction: followUpInput.trim() },
       apiConfig,
       {
         onChunk: (chunk) => {
+          if (!hasContent) {
+            hasContent = true;
+            setCurrentPhase('generating');
+          }
           fullContent += chunk;
           streamContentRef.current = fullContent;
           scheduleStreamUpdate();
@@ -289,6 +460,7 @@ const WorkflowPage: React.FC = () => {
         onDone: () => {
           flushStreamContent();
           setIsStreaming(false);
+          setCurrentPhase('idle');
           abortRef.current = null;
           setNewContent(fullContent);
           setShowDiff(true);
@@ -297,13 +469,14 @@ const WorkflowPage: React.FC = () => {
         onError: (err) => {
           flushStreamContent();
           setIsStreaming(false);
+          setCurrentPhase('idle');
           abortRef.current = null;
           message.error(err);
         },
       },
       abort.signal
     );
-  }, [followUpInput, currentDoc, currentStep, scheduleStreamUpdate, flushStreamContent]);
+  };
 
   const handleAcceptNew = () => {
     if (!currentNode) return;
@@ -316,6 +489,8 @@ const WorkflowPage: React.FC = () => {
         updates: { content: newContent, versions, currentVersionIndex: versions.length - 1 },
       },
     });
+    // Mark subsequent docs as needing regeneration (P6 backtrack)
+    dispatch({ type: 'MARK_NEEDS_REGENERATION', payload: { fromStep: currentStep } });
     setShowDiff(false);
     setNewContent('');
     setOldContent('');
@@ -340,6 +515,12 @@ const WorkflowPage: React.FC = () => {
     message.success('文档已确认');
   };
 
+  const handleBacktrack = (step: number) => {
+    dispatch({ type: 'SET_CURRENT_STEP', payload: step });
+    dispatch({ type: 'MARK_NEEDS_REGENERATION', payload: { fromStep: step } });
+    message.info(`已回溯到步骤 ${step + 1}，后续受影响的步骤已标记为需要更新`);
+  };
+
   const handleSwitchVersion = (idx: number) => {
     if (!currentNode || !currentDoc?.versions[idx]) return;
     dispatch({
@@ -351,12 +532,13 @@ const WorkflowPage: React.FC = () => {
     });
   };
 
-  // Auto-scroll content area during streaming
   useEffect(() => {
     if (isStreaming && contentRef.current) {
       contentRef.current.scrollTop = contentRef.current.scrollHeight;
     }
   }, [streamContent, isStreaming]);
+
+  const latestMemory = getMemorySummary(currentStep + 1);
 
   return (
     <Layout style={{ height: 'calc(100vh - 56px)', background: '#f8f9fc' }}>
@@ -388,23 +570,35 @@ const WorkflowPage: React.FC = () => {
             onChange={(step) => dispatch({ type: 'SET_CURRENT_STEP', payload: step })}
             items={template.nodes.map((node, idx) => {
               const doc = project.documents[idx];
+              const needsUpdate = doc?.needsRegeneration;
               return {
                 title: (
-                  <Text
-                    style={{
-                      fontSize: 13,
-                      fontWeight: idx === currentStep ? 600 : 400,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    {node.docName.replace('.md', '')}
-                  </Text>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <Text
+                      style={{
+                        fontSize: 13,
+                        fontWeight: idx === currentStep ? 600 : 400,
+                        cursor: 'pointer',
+                        color: needsUpdate ? '#faad14' : undefined,
+                      }}
+                    >
+                      {node.docName.replace('.md', '')}
+                    </Text>
+                    {needsUpdate && (
+                      <Tooltip title="前置文档已修改，建议重新生成">
+                        <WarningOutlined style={{ color: '#faad14', fontSize: 12 }} />
+                      </Tooltip>
+                    )}
+                  </div>
                 ),
                 status:
+                  needsUpdate ? 'error' as const :
                   doc?.status === 'confirmed' ? 'finish' :
                   idx === currentStep ? 'process' :
                   idx < currentStep && doc?.content ? 'finish' : 'wait',
-                icon: doc?.status === 'confirmed' ? (
+                icon: needsUpdate ? (
+                  <WarningOutlined style={{ color: '#faad14' }} />
+                ) : doc?.status === 'confirmed' ? (
                   <CheckCircleOutlined style={{ color: '#52c41a' }} />
                 ) : undefined,
               };
@@ -432,8 +626,23 @@ const WorkflowPage: React.FC = () => {
             )}
             <Tag color="blue">步骤 {currentStep + 1}/{template.nodes.length}</Tag>
             <Title level={5} style={{ margin: 0 }}>{currentNode?.docName}</Title>
+            {currentDoc?.needsRegeneration && (
+              <Tag color="warning" icon={<WarningOutlined />}>需要重新生成</Tag>
+            )}
           </Space>
           <Space>
+            {currentStep > 0 && currentDoc?.content && (
+              <Tooltip title="回溯修改：重新生成当前步骤并标记后续步骤需更新">
+                <Button
+                  size="small"
+                  icon={<RollbackOutlined />}
+                  onClick={() => handleBacktrack(currentStep)}
+                  style={{ borderRadius: 6 }}
+                >
+                  回溯
+                </Button>
+              </Tooltip>
+            )}
             {currentNode?.enableReviewPrevDocs && (
               <Button
                 size="small"
@@ -515,6 +724,13 @@ const WorkflowPage: React.FC = () => {
           </Space>
         </div>
 
+        {/* Phase Indicator - fixed below user input */}
+        {currentPhase !== 'idle' && (
+          <div style={{ borderBottom: '1px solid #f0f0f0' }}>
+            <PhaseIndicator phase={currentPhase} isStreaming={isStreaming} />
+          </div>
+        )}
+
         {/* Diff View */}
         {showDiff && (
           <div style={{ padding: '12px 20px', background: '#fff8f0', borderBottom: '1px solid #ffd591' }}>
@@ -530,17 +746,14 @@ const WorkflowPage: React.FC = () => {
         {/* Document Content Display */}
         <div
           ref={contentRef}
-          style={{
-            flex: 1,
-            overflow: 'auto',
-            padding: '20px',
-          }}
+          style={{ flex: 1, overflow: 'auto', padding: '20px' }}
         >
-          {/* AI Reasoning / Thinking Section */}
+          {/* AI Reasoning Section */}
           {currentReasoning && (
             <Collapse
               size="small"
-              style={{ marginBottom: 16, borderRadius: 10, background: '#fefcf4', border: '1px solid #faecd0' }}
+              className={`reasoning-panel ${isStreaming && currentPhase === 'thinking' ? 'active' : ''}`}
+              style={{ marginBottom: 16 }}
               defaultActiveKey={isStreaming ? ['reasoning'] : []}
               items={[{
                 key: 'reasoning',
@@ -567,14 +780,10 @@ const WorkflowPage: React.FC = () => {
 
           {displayContent ? (
             <Card
-              style={{
-                borderRadius: 12,
-                boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
-                minHeight: 200,
-              }}
+              style={{ borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.04)', minHeight: 200 }}
               bodyStyle={{ padding: '20px 24px' }}
             >
-              <div className={`markdown-body ${isStreaming ? 'streaming-cursor' : ''}`}>
+              <div className={`markdown-body ${isStreaming && currentPhase === 'generating' ? 'streaming-cursor' : ''}`}>
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayContent}</ReactMarkdown>
               </div>
             </Card>
@@ -706,7 +915,7 @@ const WorkflowPage: React.FC = () => {
         </div>
       </Content>
 
-      {/* Right: Waiting Area */}
+      {/* Right: Memory + Waiting Area */}
       <Sider
         width={rightCollapsed ? 0 : 340}
         style={{
@@ -725,6 +934,38 @@ const WorkflowPage: React.FC = () => {
             onClick={() => setRightCollapsed(true)}
           />
         </div>
+
+        {/* Memory Area (P4) */}
+        {(latestMemory || isMemoryStreaming) && (
+          <div className="memory-panel">
+            <Collapse
+              size="small"
+              bordered={false}
+              style={{ background: 'transparent' }}
+              defaultActiveKey={['memory']}
+              items={[{
+                key: 'memory',
+                label: (
+                  <Space>
+                    <RobotOutlined style={{ color: '#13c2c2' }} />
+                    <Text style={{ fontSize: 13, color: '#006d75', fontWeight: 500 }}>
+                      记忆区
+                      {isMemoryStreaming && <LoadingOutlined style={{ marginLeft: 6, color: '#13c2c2' }} />}
+                    </Text>
+                  </Space>
+                ),
+                children: (
+                  <div style={{ maxHeight: 400, overflow: 'auto', fontSize: 12, lineHeight: 1.8, color: '#595959' }}>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {isMemoryStreaming ? memorySummaryStream : latestMemory}
+                    </ReactMarkdown>
+                  </div>
+                ),
+              }]}
+            />
+          </div>
+        )}
+
         <WaitingAreaPanel />
       </Sider>
 
@@ -738,34 +979,38 @@ const WorkflowPage: React.FC = () => {
       >
         {project.documents
           .filter((_d, i) => i < currentStep && _d.content)
-          .map((doc, i) => (
-            <Card
-              key={doc.nodeId}
-              size="small"
-              title={
-                <Space>
-                  <FileTextOutlined style={{ color: '#4C6EF5' }} />
-                  <span>{doc.docName}</span>
-                  <Tooltip title="复制内容">
-                    <Button
-                      size="small"
-                      type="text"
-                      icon={<CopyOutlined />}
-                      onClick={() => {
-                        navigator.clipboard.writeText(doc.content);
-                        message.success('已复制');
-                      }}
-                    />
-                  </Tooltip>
-                </Space>
-              }
-              style={{ marginBottom: 12, borderRadius: 10 }}
-            >
-              <div className="markdown-body" style={{ maxHeight: 300, overflow: 'auto' }}>
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{doc.content}</ReactMarkdown>
-              </div>
-            </Card>
-          ))}
+          .map((doc) => {
+            const summary = (project.docSummaries || []).find(s => s.nodeId === doc.nodeId);
+            return (
+              <Card
+                key={doc.nodeId}
+                size="small"
+                title={
+                  <Space>
+                    <FileTextOutlined style={{ color: '#4C6EF5' }} />
+                    <span>{doc.docName}</span>
+                    {summary && <Tag color="blue" style={{ fontSize: 11 }}>已压缩</Tag>}
+                    <Tooltip title="复制内容">
+                      <Button
+                        size="small"
+                        type="text"
+                        icon={<CopyOutlined />}
+                        onClick={() => {
+                          navigator.clipboard.writeText(doc.content);
+                          message.success('已复制');
+                        }}
+                      />
+                    </Tooltip>
+                  </Space>
+                }
+                style={{ marginBottom: 12, borderRadius: 10 }}
+              >
+                <div className="markdown-body" style={{ maxHeight: 300, overflow: 'auto' }}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{doc.content}</ReactMarkdown>
+                </div>
+              </Card>
+            );
+          })}
         {project.documents.filter((_d, i) => i < currentStep && _d.content).length === 0 && (
           <Empty description="暂无前置文档" />
         )}

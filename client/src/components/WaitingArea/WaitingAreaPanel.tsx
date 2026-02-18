@@ -1,22 +1,24 @@
 import React, { useState } from 'react';
 import {
-  Collapse, Table, Button, Space, Input, Select, Tag, Modal, Form,
-  Typography, Empty, Popconfirm, Switch, Tooltip, InputNumber, message,
+  Collapse, Button, Space, Input, Select, Tag, Modal, Form,
+  Typography, Empty, Popconfirm, Switch, Tooltip, message, Spin,
 } from 'antd';
 import {
   PlusOutlined, DeleteOutlined, EditOutlined, DatabaseOutlined,
-  PartitionOutlined, SaveOutlined, SyncOutlined,
+  PartitionOutlined, SyncOutlined, RobotOutlined, FileTextOutlined,
 } from '@ant-design/icons';
 import { useProject } from '../../contexts/ProjectContext';
 import type { StateItem, TableItem, TableField } from '../../types';
+import { aiExtractFromDoc } from '../../services/aiDirect';
 import { extractStates, extractTables } from '../../utils/docExtractor';
+import { configStorage } from '../../services/storage';
 import { v4 as uuidv4 } from 'uuid';
 
 const { Text } = Typography;
 const { Panel } = Collapse;
 
 const WaitingAreaPanel: React.FC = () => {
-  const { project, dispatch } = useProject();
+  const { project, template, dispatch } = useProject();
   const [stateModalOpen, setStateModalOpen] = useState(false);
   const [tableModalOpen, setTableModalOpen] = useState(false);
   const [editingState, setEditingState] = useState<StateItem | null>(null);
@@ -24,6 +26,7 @@ const WaitingAreaPanel: React.FC = () => {
   const [stateForm] = Form.useForm();
   const [tableForm] = Form.useForm();
   const [editingFields, setEditingFields] = useState<TableField[]>([]);
+  const [isExtracting, setIsExtracting] = useState(false);
 
   if (!project) return null;
 
@@ -117,12 +120,12 @@ const WaitingAreaPanel: React.FC = () => {
     setEditingFields(fields => fields.filter(f => f.id !== id));
   };
 
-  const handleExtractFromDocs = () => {
+  const handleExtractFromDocs = async () => {
     if (!project) return;
 
     const allContent = project.documents
       .filter(d => d.content)
-      .map(d => d.content)
+      .map(d => `## ${d.docName}\n\n${d.content}`)
       .join('\n\n---\n\n');
 
     if (!allContent) {
@@ -130,24 +133,83 @@ const WaitingAreaPanel: React.FC = () => {
       return;
     }
 
+    setIsExtracting(true);
+
     const existingStateNames = new Set(project.states.map(s => s.stateName));
     const existingTableNames = new Set(project.tables.map(t => t.tableName));
+    const addedStateNames = new Set<string>();
+    const addedTableNames = new Set<string>();
+    let stateCount = 0;
+    let tableCount = 0;
 
-    const newStates = extractStates(allContent).filter(s => !existingStateNames.has(s.stateName));
-    const newTables = extractTables(allContent).filter(t => !existingTableNames.has(t.tableName));
+    // Phase 1: Regex extraction (fast, always works)
+    const regexStates = extractStates(allContent);
+    const regexTables = extractTables(allContent);
 
-    for (const s of newStates) {
-      dispatch({ type: 'ADD_STATE', payload: s });
+    for (const s of regexStates) {
+      if (!existingStateNames.has(s.stateName) && !addedStateNames.has(s.stateName)) {
+        dispatch({ type: 'ADD_STATE', payload: { ...s, relatedDocs: [] } });
+        addedStateNames.add(s.stateName);
+        stateCount++;
+      }
     }
-    for (const t of newTables) {
-      dispatch({ type: 'ADD_TABLE', payload: t });
+    for (const t of regexTables) {
+      if (!existingTableNames.has(t.tableName) && !addedTableNames.has(t.tableName)) {
+        dispatch({ type: 'ADD_TABLE', payload: { ...t, relatedDocs: [] } });
+        addedTableNames.add(t.tableName);
+        tableCount++;
+      }
     }
 
-    if (newStates.length > 0 || newTables.length > 0) {
+    // Phase 2: AI extraction (supplement what regex missed)
+    const apiConfig = configStorage.getDefault();
+    if (apiConfig) {
+      try {
+        const aiResult = await aiExtractFromDoc(allContent, apiConfig);
+
+        for (const s of aiResult.states) {
+          if (!existingStateNames.has(s.stateName) && !addedStateNames.has(s.stateName)) {
+            dispatch({
+              type: 'ADD_STATE',
+              payload: {
+                id: uuidv4(), stateName: s.stateName, stateValues: s.stateValues,
+                description: s.description, relatedDocs: [], relatedTables: [],
+              },
+            });
+            addedStateNames.add(s.stateName);
+            stateCount++;
+          }
+        }
+
+        for (const t of aiResult.tables) {
+          if (!existingTableNames.has(t.tableName) && !addedTableNames.has(t.tableName)) {
+            dispatch({
+              type: 'ADD_TABLE',
+              payload: {
+                id: uuidv4(), tableName: t.tableName, description: t.description,
+                fields: t.fields.map(f => ({
+                  id: uuidv4(), fieldName: f.fieldName, fieldType: f.fieldType,
+                  description: f.description, isRequired: f.isRequired, relatedState: '',
+                })),
+                relatedDocs: [],
+              },
+            });
+            addedTableNames.add(t.tableName);
+            tableCount++;
+          }
+        }
+      } catch {
+        // AI failed, regex results already applied
+      }
+    }
+
+    setIsExtracting(false);
+
+    if (stateCount > 0 || tableCount > 0) {
       const parts: string[] = [];
-      if (newStates.length > 0) parts.push(`${newStates.length} 个状态`);
-      if (newTables.length > 0) parts.push(`${newTables.length} 个表结构`);
-      message.success(`已提取 ${parts.join('、')}`);
+      if (stateCount > 0) parts.push(`${stateCount} 个状态`);
+      if (tableCount > 0) parts.push(`${tableCount} 个表结构`);
+      message.success(`已提取 ${parts.join('、')}（AI提取）`);
     } else {
       message.info('未发现新的状态或表结构');
     }
@@ -159,11 +221,13 @@ const WaitingAreaPanel: React.FC = () => {
       <div style={{ marginBottom: 8 }}>
         <Button
           size="small"
-          icon={<SyncOutlined />}
+          icon={isExtracting ? <SyncOutlined spin /> : <RobotOutlined />}
           onClick={handleExtractFromDocs}
+          loading={isExtracting}
           style={{ width: '100%', borderRadius: 6 }}
+          type="dashed"
         >
-          从文档自动提取
+          {isExtracting ? 'AI 正在提取...' : 'AI 智能提取'}
         </Button>
       </div>
 
@@ -257,7 +321,10 @@ const WaitingAreaPanel: React.FC = () => {
                   }}
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <Text strong style={{ fontSize: 13 }}>{table.tableName}</Text>
+                    <Space size={4}>
+                      <DatabaseOutlined style={{ color: '#52c41a', fontSize: 12 }} />
+                      <Text strong style={{ fontSize: 13 }}>{table.tableName}</Text>
+                    </Space>
                     <Space size={2}>
                       <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openEditTable(table)} />
                       <Popconfirm title="确认删除?" onConfirm={() => dispatch({ type: 'DELETE_TABLE', payload: table.id })}>
@@ -266,13 +333,35 @@ const WaitingAreaPanel: React.FC = () => {
                     </Space>
                   </div>
                   {table.description && (
-                    <Text type="secondary" style={{ fontSize: 12 }}>{table.description}</Text>
+                    <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 2 }}>{table.description}</Text>
                   )}
-                  <div style={{ marginTop: 4 }}>
-                    <Text type="secondary" style={{ fontSize: 11 }}>
-                      字段: {table.fields.map(f => f.fieldName).join(', ') || '无'}
-                    </Text>
+                  <div style={{ marginTop: 6 }}>
+                    {table.fields.slice(0, 6).map(f => (
+                      <Tag
+                        key={f.id}
+                        style={{ fontSize: 11, marginBottom: 3, borderRadius: 4 }}
+                        color={f.isRequired ? 'green' : 'default'}
+                      >
+                        {f.fieldName}
+                        <span style={{ color: '#8c8c8c', marginLeft: 3, fontSize: 10 }}>{f.fieldType}</span>
+                      </Tag>
+                    ))}
+                    {table.fields.length > 6 && (
+                      <Tag style={{ fontSize: 11, marginBottom: 3 }}>+{table.fields.length - 6} more</Tag>
+                    )}
+                    {table.fields.length === 0 && (
+                      <Text type="secondary" style={{ fontSize: 11 }}>暂无字段定义</Text>
+                    )}
                   </div>
+                  {table.relatedDocs?.length > 0 && (
+                    <div style={{ marginTop: 4 }}>
+                      {table.relatedDocs.map(docId => (
+                        <Tag key={docId} style={{ fontSize: 10 }} icon={<FileTextOutlined />} color="blue">
+                          {docId.replace(/-node-\d+/, '')}
+                        </Tag>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

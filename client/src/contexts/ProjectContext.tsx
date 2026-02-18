@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useReducer, useCallback, useEffect } from 'react';
-import type { ProjectData, StepDocument, StateItem, TableItem, WorkflowTemplate } from '../types';
+import type { ProjectData, StepDocument, StateItem, TableItem, WorkflowTemplate, DocSummary, MemorySummary } from '../types';
 import { projectStorage } from '../services/storage';
+import { idbProjectStorage } from '../services/idbStorage';
 import { v4 as uuidv4 } from 'uuid';
 
 interface ProjectState {
@@ -20,6 +21,9 @@ type ProjectAction =
   | { type: 'ADD_TABLE'; payload: TableItem }
   | { type: 'UPDATE_TABLE'; payload: TableItem }
   | { type: 'DELETE_TABLE'; payload: string }
+  | { type: 'SET_DOC_SUMMARY'; payload: DocSummary }
+  | { type: 'SET_MEMORY_SUMMARY'; payload: MemorySummary }
+  | { type: 'MARK_NEEDS_REGENERATION'; payload: { fromStep: number } }
   | { type: 'CLEAR_PROJECT' };
 
 function projectReducer(state: ProjectState, action: ProjectAction): ProjectState {
@@ -81,6 +85,41 @@ function projectReducer(state: ProjectState, action: ProjectAction): ProjectStat
       return { ...state, project: { ...state.project, tables } };
     }
 
+    case 'SET_DOC_SUMMARY': {
+      if (!state.project) return state;
+      const summaries = [...(state.project.docSummaries || [])];
+      const idx = summaries.findIndex(s => s.nodeId === action.payload.nodeId);
+      if (idx >= 0) {
+        summaries[idx] = action.payload;
+      } else {
+        summaries.push(action.payload);
+      }
+      return { ...state, project: { ...state.project, docSummaries: summaries } };
+    }
+
+    case 'SET_MEMORY_SUMMARY': {
+      if (!state.project) return state;
+      const memories = [...(state.project.memorySummaries || [])];
+      const idx = memories.findIndex(m => m.stepIndex === action.payload.stepIndex);
+      if (idx >= 0) {
+        memories[idx] = action.payload;
+      } else {
+        memories.push(action.payload);
+      }
+      return { ...state, project: { ...state.project, memorySummaries: memories } };
+    }
+
+    case 'MARK_NEEDS_REGENERATION': {
+      if (!state.project) return state;
+      const docs = state.project.documents.map((d, i) => {
+        if (i > action.payload.fromStep && d.content && d.status !== 'pending') {
+          return { ...d, needsRegeneration: true, status: 'needs_update' as const };
+        }
+        return d;
+      });
+      return { ...state, project: { ...state.project, documents: docs } };
+    }
+
     case 'CLEAR_PROJECT':
       return { project: null, template: null };
 
@@ -95,6 +134,7 @@ interface ProjectContextType {
   dispatch: React.Dispatch<ProjectAction>;
   initProject: (name: string, vision: string, template: WorkflowTemplate) => ProjectData;
   getPrevDocsContent: (currentStep: number) => string;
+  getMemorySummary: (currentStep: number) => string;
 }
 
 const ProjectContext = createContext<ProjectContextType | null>(null);
@@ -139,7 +179,19 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
   const getPrevDocsContent = useCallback(
     (currentStep: number): string => {
       if (!state.project) return '';
-      return state.project.documents
+      const docs = state.project.documents;
+      const hasMemory = (state.project.memorySummaries || []).some(m => m.stepIndex < currentStep && m.content);
+
+      if (hasMemory && currentStep >= 2) {
+        // With memory, only include the most recent completed doc as full text
+        const recentDoc = docs
+          .filter((_d, i) => i < currentStep && _d.content)
+          .slice(-1)[0];
+        return recentDoc ? `## ${recentDoc.docName}（上一步文档）\n\n${recentDoc.content}` : '';
+      }
+
+      // No memory yet (step 0-1), include all prev docs
+      return docs
         .filter((_d, i) => i < currentStep && _d.content)
         .map(d => `## ${d.docName}\n\n${d.content}`)
         .join('\n\n---\n\n');
@@ -147,16 +199,28 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
     [state.project]
   );
 
-  // Auto-save to localStorage
+  const getMemorySummary = useCallback(
+    (currentStep: number): string => {
+      if (!state.project?.memorySummaries?.length) return '';
+      const sorted = [...state.project.memorySummaries]
+        .filter(m => m.stepIndex < currentStep)
+        .sort((a, b) => b.stepIndex - a.stepIndex);
+      return sorted[0]?.content || '';
+    },
+    [state.project]
+  );
+
   useEffect(() => {
     if (state.project) {
       projectStorage.save(state.project);
       projectStorage.setCurrentId(state.project.info.projectId);
+      idbProjectStorage.save(state.project).catch(() => {});
+      idbProjectStorage.setCurrentId(state.project.info.projectId).catch(() => {});
     }
   }, [state.project]);
 
   return (
-    <ProjectContext.Provider value={{ project: state.project, template: state.template, dispatch, initProject, getPrevDocsContent }}>
+    <ProjectContext.Provider value={{ project: state.project, template: state.template, dispatch, initProject, getPrevDocsContent, getMemorySummary }}>
       {children}
     </ProjectContext.Provider>
   );

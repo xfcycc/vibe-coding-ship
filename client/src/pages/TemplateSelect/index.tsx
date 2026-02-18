@@ -12,6 +12,7 @@ import { useNavigate } from 'react-router-dom';
 import { TEMPLATE_CODING, TEMPLATE_MVP } from '../../data';
 import { useProject } from '../../contexts/ProjectContext';
 import { projectStorage } from '../../services/storage';
+import { idbProjectStorage } from '../../services/idbStorage';
 import type { WorkflowTemplate, ProjectData } from '../../types';
 
 const { Title, Text, Paragraph } = Typography;
@@ -47,11 +48,25 @@ const TemplateSelectPage: React.FC = () => {
   const [savedProjects, setSavedProjects] = useState<{ projectId: string; projectName: string; templateName: string; updatedAt: string }[]>([]);
 
   useEffect(() => {
-    setSavedProjects(projectStorage.getList());
+    const load = async () => {
+      try {
+        const idbList = await idbProjectStorage.getList();
+        if (idbList.length > 0) {
+          setSavedProjects(idbList);
+          return;
+        }
+      } catch { /* fallback */ }
+      setSavedProjects(projectStorage.getList());
+    };
+    load();
   }, []);
 
-  const handleLoadProject = (projectId: string) => {
-    const data = projectStorage.load(projectId);
+  const handleLoadProject = async (projectId: string) => {
+    let data: ProjectData | null = null;
+    try {
+      data = await idbProjectStorage.load(projectId);
+    } catch { /* fallback */ }
+    if (!data) data = projectStorage.load(projectId);
     if (!data) {
       message.error('项目加载失败');
       return;
@@ -62,9 +77,15 @@ const TemplateSelectPage: React.FC = () => {
     message.success('项目已加载');
   };
 
-  const handleDeleteProject = (projectId: string) => {
+  const handleDeleteProject = async (projectId: string) => {
     projectStorage.delete(projectId);
-    setSavedProjects(projectStorage.getList());
+    try { await idbProjectStorage.delete(projectId); } catch { /* ok */ }
+    try {
+      const list = await idbProjectStorage.getList();
+      setSavedProjects(list);
+    } catch {
+      setSavedProjects(projectStorage.getList());
+    }
     message.success('项目已删除');
   };
 

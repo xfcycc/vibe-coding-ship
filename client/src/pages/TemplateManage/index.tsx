@@ -1,19 +1,30 @@
 import React, { useState, useEffect } from 'react';
 import {
   Card, Typography, Button, Space, Input, Modal, Form, List, Tag,
-  Empty, Popconfirm, message, Tabs, Tooltip, Divider, Select,
+  Empty, Popconfirm, message, Tooltip, Select, Alert,
 } from 'antd';
 import {
   PlusOutlined, DeleteOutlined, EditOutlined, CopyOutlined,
-  SettingOutlined, DragOutlined, FileTextOutlined, SaveOutlined,
-  CodeOutlined, RocketOutlined,
+  SettingOutlined, FileTextOutlined,
+  CodeOutlined, RocketOutlined, RollbackOutlined,
 } from '@ant-design/icons';
 import { TEMPLATE_CODING, TEMPLATE_MVP } from '../../data';
 import { templateStorage } from '../../services/storage';
+import { idbTemplateStorage } from '../../services/idbStorage';
 import type { WorkflowTemplate, WorkflowNode, PromptItem } from '../../types';
 import { v4 as uuidv4 } from 'uuid';
 
-const { Title, Text, Paragraph } = Typography;
+const { Title, Text } = Typography;
+
+const saveTemplate = (t: WorkflowTemplate) => {
+  templateStorage.save(t);
+  idbTemplateStorage.save(t).catch(() => {});
+};
+
+const deleteTemplate = (id: string) => {
+  templateStorage.delete(id);
+  idbTemplateStorage.delete(id).catch(() => {});
+};
 
 const TemplateManagePage: React.FC = () => {
   const [customTemplates, setCustomTemplates] = useState<WorkflowTemplate[]>([]);
@@ -26,7 +37,14 @@ const TemplateManagePage: React.FC = () => {
   const [stepForm] = Form.useForm();
   const [templateForm] = Form.useForm();
 
-  const loadCustomTemplates = () => {
+  const loadCustomTemplates = async () => {
+    try {
+      const idbTemplates = await idbTemplateStorage.getAll();
+      if (idbTemplates.length > 0) {
+        setCustomTemplates(idbTemplates);
+        return;
+      }
+    } catch { /* fallback to localStorage */ }
     setCustomTemplates(templateStorage.getAll());
   };
 
@@ -58,7 +76,7 @@ const TemplateManagePage: React.FC = () => {
       };
 
       if (!updatedTemplate.isPreset) {
-        templateStorage.save(updatedTemplate);
+        saveTemplate(updatedTemplate);
         loadCustomTemplates();
       } else {
         // For preset templates, save as custom override
@@ -107,7 +125,7 @@ const TemplateManagePage: React.FC = () => {
         updatedAt: new Date().toISOString(),
       };
 
-      templateStorage.save(newTemplate);
+      saveTemplate(newTemplate);
       setTemplateModalOpen(false);
       templateForm.resetFields();
       loadCustomTemplates();
@@ -125,6 +143,7 @@ const TemplateManagePage: React.FC = () => {
     stepForm.validateFields().then(values => {
       if (!editingTemplate) return;
 
+      const isBacktrack = values.nodeType === 'backtrack';
       const newNode: WorkflowNode = {
         nodeId: uuidv4(),
         step: editingTemplate.nodes.length + 1,
@@ -136,12 +155,18 @@ const TemplateManagePage: React.FC = () => {
         isRequired: false,
         exampleText: values.exampleText || '',
         enableReviewPrevDocs: true,
+        nodeType: values.nodeType || 'normal',
+        backtrackTargetNodeId: isBacktrack ? values.backtrackTargetNodeId : undefined,
       };
+
+      const defaultPrompt = isBacktrack
+        ? `# 任务\n基于用户修改要求，回溯并重新生成文档。\n\n# 前置文档\n{prevDocs}\n\n# 当前状态\n{currentStates}\n\n# 当前表结构\n{currentTables}\n\n# 用户修改要求\n{userInput}\n\n# 输出要求\n- 保持与原文档结构一致\n- 仅修改用户要求的部分\n- Markdown 格式`
+        : `# 任务\n请根据前置文档和用户输入，生成「${values.docName}」文档。\n\n# 前置文档\n{prevDocs}\n\n# 当前状态\n{currentStates}\n\n# 当前表结构\n{currentTables}\n\n# 用户补充\n{userInput}\n\n# 输出要求\n- Markdown 格式\n- 内容具体可落地`;
 
       const newPrompt: PromptItem = {
         promptId: newNode.promptId,
-        promptContent: values.promptContent || '请根据前置文档内容和用户输入，生成{docName}文档。\n\n{userInput}\n\n{prevDocs}',
-        variableList: ['prevDocs', 'userInput'],
+        promptContent: values.promptContent || defaultPrompt,
+        variableList: ['prevDocs', 'userInput', 'currentStates', 'currentTables'],
         relatedNodeId: newNode.nodeId,
         editTime: new Date().toISOString(),
         creator: 'user',
@@ -154,7 +179,7 @@ const TemplateManagePage: React.FC = () => {
         updatedAt: new Date().toISOString(),
       };
 
-      templateStorage.save(updatedTemplate);
+      saveTemplate(updatedTemplate);
       setNewStepModalOpen(false);
       loadCustomTemplates();
       message.success('步骤已添加');
@@ -175,13 +200,13 @@ const TemplateManagePage: React.FC = () => {
       updatedAt: new Date().toISOString(),
     };
 
-    templateStorage.save(updatedTemplate);
+    saveTemplate(updatedTemplate);
     loadCustomTemplates();
     message.success('步骤已删除');
   };
 
   const handleDeleteTemplate = (id: string) => {
-    templateStorage.delete(id);
+    deleteTemplate(id);
     loadCustomTemplates();
     message.success('模板已删除');
   };
@@ -196,7 +221,7 @@ const TemplateManagePage: React.FC = () => {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
-    templateStorage.save(newTemplate);
+    saveTemplate(newTemplate);
     loadCustomTemplates();
     message.success('模板已复制');
   };
@@ -306,6 +331,14 @@ const TemplateManagePage: React.FC = () => {
                           <Tag style={{ fontSize: 11, borderRadius: 10 }}>步骤 {node.step}</Tag>
                           <Text style={{ fontSize: 13 }}>{node.docName}</Text>
                           {node.isFixed && <Tag color="orange" style={{ fontSize: 10 }}>固定</Tag>}
+                          {node.nodeType === 'backtrack' && (
+                            <Tag color="warning" icon={<RollbackOutlined />} style={{ fontSize: 10 }}>回溯节点</Tag>
+                          )}
+                          {node.relatedWaitAreas?.length > 0 && (
+                            <Tag color="blue" style={{ fontSize: 10 }}>
+                              关联: {node.relatedWaitAreas.join(', ')}
+                            </Tag>
+                          )}
                         </Space>
                       }
                       description={
@@ -331,11 +364,36 @@ const TemplateManagePage: React.FC = () => {
         okText="保存"
         width={680}
       >
-        <div style={{ marginBottom: 12 }}>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            可用变量: {'{projectName}'}, {'{projectVision}'}, {'{userInput}'}, {'{prevDocs}'}
-          </Text>
-        </div>
+        <Alert
+          type="info"
+          showIcon={false}
+          style={{ marginBottom: 12, fontSize: 12 }}
+          message={
+            <div>
+              <Text strong style={{ fontSize: 12 }}>可用变量：</Text>
+              <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                {[
+                  { var: '{projectName}', desc: '项目名' },
+                  { var: '{projectVision}', desc: '愿景' },
+                  { var: '{userInput}', desc: '用户输入' },
+                  { var: '{prevDocs}', desc: '前置文档' },
+                  { var: '{memorySummary}', desc: '记忆摘要' },
+                  { var: '{currentStates}', desc: '状态数据' },
+                  { var: '{currentTables}', desc: '表结构数据' },
+                ].map(v => (
+                  <Tag key={v.var} color="blue" style={{ fontSize: 11, cursor: 'pointer' }}
+                    onClick={() => {
+                      navigator.clipboard.writeText(v.var);
+                      message.success(`已复制 ${v.var}`);
+                    }}
+                  >
+                    {v.var} ({v.desc})
+                  </Tag>
+                ))}
+              </div>
+            </div>
+          }
+        />
         <Form form={promptForm} layout="vertical">
           <Form.Item name="promptContent" rules={[{ required: true }]}>
             <Input.TextArea rows={12} style={{ fontFamily: 'monospace', fontSize: 13, borderRadius: 8 }} />
@@ -375,6 +433,14 @@ const TemplateManagePage: React.FC = () => {
         width={560}
       >
         <Form form={stepForm} layout="vertical" style={{ marginTop: 16 }}>
+          <Form.Item name="nodeType" label="节点类型" initialValue="normal">
+            <Select
+              options={[
+                { value: 'normal', label: '普通节点 - 正常生成文档' },
+                { value: 'backtrack', label: '回溯节点 - 用于修改已有步骤' },
+              ]}
+            />
+          </Form.Item>
           <Form.Item name="docName" label="文档名称" rules={[{ required: true }]}>
             <Input placeholder="如: 06-部署指南.md" />
           </Form.Item>
@@ -386,20 +452,35 @@ const TemplateManagePage: React.FC = () => {
           </Form.Item>
           <Form.Item name="promptContent" label="AI提示词">
             <Input.TextArea
-              placeholder="提示词模板，可用变量: {projectName}, {projectVision}, {userInput}, {prevDocs}"
-              rows={4}
+              placeholder={`提示词模板，可用变量:\n{projectName}, {projectVision}, {userInput}, {prevDocs}\n{memorySummary}, {currentStates}, {currentTables}`}
+              rows={6}
               style={{ fontFamily: 'monospace', fontSize: 13 }}
             />
           </Form.Item>
           <Form.Item name="relatedWaitAreas" label="关联等待区">
             <Select
               mode="multiple"
-              placeholder="选择关联的等待区"
+              placeholder="选择关联的等待区（AI 将自动提取/注入相关数据）"
               options={[
-                { value: 'wait-state', label: '状态管理' },
-                { value: 'wait-table', label: '核心表管理' },
+                { value: 'wait-state', label: '状态管理 (自动提取/注入状态)' },
+                { value: 'wait-table', label: '核心表管理 (自动提取/注入表结构)' },
               ]}
             />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.nodeType !== cur.nodeType}>
+            {({ getFieldValue }) =>
+              getFieldValue('nodeType') === 'backtrack' && editingTemplate ? (
+                <Form.Item name="backtrackTargetNodeId" label="回溯目标步骤">
+                  <Select
+                    placeholder="选择要回溯到的步骤"
+                    options={editingTemplate.nodes.map(n => ({
+                      value: n.nodeId,
+                      label: `步骤 ${n.step}: ${n.docName}`,
+                    }))}
+                  />
+                </Form.Item>
+              ) : null
+            }
           </Form.Item>
         </Form>
       </Modal>

@@ -99,3 +99,144 @@ body {
   color: #4C6EF5;
   margin-left: 2px;
 }
+
+/* AI Processing Phase Animations */
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 8px rgba(76, 110, 245, 0.3); }
+  50% { box-shadow: 0 0 20px rgba(76, 110, 245, 0.6); }
+}
+
+@keyframes thinking-dots {
+  0%, 20% { content: '.'; }
+  40% { content: '..'; }
+  60%, 100% { content: '...'; }
+}
+
+@keyframes gradient-flow {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.phase-indicator {
+  animation: fade-in-up 0.3s ease-out;
+  border-radius: 10px;
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0;
+}
+
+.phase-thinking {
+  background: linear-gradient(135deg, #fff7e6 0%, #fffbe6 50%, #fff7e6 100%);
+  background-size: 200% 200%;
+  animation: fade-in-up 0.3s ease-out, gradient-flow 3s ease infinite;
+  border: 1px solid #ffd591;
+}
+
+.phase-generating {
+  background: linear-gradient(135deg, #f6ffed 0%, #fcffe6 50%, #f6ffed 100%);
+  background-size: 200% 200%;
+  animation: fade-in-up 0.3s ease-out, gradient-flow 4s ease infinite;
+  border: 1px solid #b7eb8f;
+}
+
+.phase-extracting {
+  background: linear-gradient(135deg, #f9f0ff 0%, #efdbff 50%, #f9f0ff 100%);
+  background-size: 200% 200%;
+  animation: fade-in-up 0.3s ease-out, gradient-flow 3s ease infinite;
+  border: 1px solid #d3adf7;
+}
+
+.phase-summarizing {
+  background: linear-gradient(135deg, #e6fffb 0%, #f0f5ff 50%, #e6fffb 100%);
+  background-size: 200% 200%;
+  animation: fade-in-up 0.3s ease-out, gradient-flow 3s ease infinite;
+  border: 1px solid #87e8de;
+}
+
+.phase-icon {
+  font-size: 20px;
+  animation: pulse-glow 2s ease-in-out infinite;
+  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255,255,255,0.8);
+}
+
+.phase-text {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.phase-subtext {
+  font-size: 12px;
+  color: #8c8c8c;
+  margin-top: 2px;
+}
+
+.progress-bar-container {
+  height: 3px;
+  background: #f0f0f0;
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 8px;
+}
+
+.progress-bar-shimmer {
+  height: 100%;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, #4C6EF5, transparent);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+  border-radius: 2px;
+}
+
+.reasoning-panel {
+  border-radius: 10px;
+  background: #fefcf4;
+  border: 1px solid #faecd0;
+  margin-bottom: 16px;
+  transition: all 0.3s ease;
+}
+
+.reasoning-panel.active {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+.memory-panel {
+  background: linear-gradient(135deg, #e6fffb 0%, #f0f5ff 100%);
+  border: 1px solid #87e8de;
+  border-radius: 10px;
+  margin: 8px 12px;
+  transition: all 0.3s ease;
+}
+
+.memory-panel .ant-collapse-header {
+  padding: 8px 12px !important;
+}
+
+.needs-update-badge {
+  animation: pulse-glow 2s ease-in-out infinite;
+  border: 2px solid #faad14 !important;
+  border-radius: 8px;
+}

@@ -24,6 +24,8 @@ export interface AIModelPreset {
 }
 
 // ===== Workflow Template =====
+export type NodeType = 'normal' | 'backtrack';
+
 export interface WorkflowNode {
   nodeId: string;
   step: number;
@@ -35,6 +37,8 @@ export interface WorkflowNode {
   isRequired: boolean;
   exampleText?: string;
   enableReviewPrevDocs: boolean;
+  nodeType?: NodeType;
+  backtrackTargetNodeId?: string;
 }
 
 export interface PromptItem {
@@ -122,9 +126,22 @@ export interface StepDocument {
   docName: string;
   content: string;
   userInput: string;
-  status: 'pending' | 'generating' | 'completed' | 'confirmed';
+  status: 'pending' | 'generating' | 'completed' | 'confirmed' | 'needs_update';
   versions: DocumentVersion[];
   currentVersionIndex: number;
+  needsRegeneration?: boolean;
+}
+
+export interface DocSummary {
+  nodeId: string;
+  summary: string;
+  createdAt: string;
+}
+
+export interface MemorySummary {
+  stepIndex: number;
+  content: string;
+  createdAt: string;
 }
 
 export interface ProjectData {
@@ -133,6 +150,8 @@ export interface ProjectData {
   states: StateItem[];
   tables: TableItem[];
   currentStep: number;
+  docSummaries?: DocSummary[];
+  memorySummaries?: MemorySummary[];
 }
 
 // ===== AI Streaming =====

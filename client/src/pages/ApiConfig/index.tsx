@@ -9,6 +9,7 @@ import {
 } from '@ant-design/icons';
 import { AI_MODEL_PRESETS } from '../../data';
 import { configStorage } from '../../services/storage';
+import { idbConfigStorage } from '../../services/idbStorage';
 import { testConnectionDirect } from '../../services/aiDirect';
 import type { AIModelConfig, AIModelPreset } from '../../types';
 
@@ -54,7 +55,8 @@ const ApiConfigPage: React.FC = () => {
         stream: true,
         isDefault: values.isDefault ?? false,
       };
-      configStorage.save(config);
+      const saved = configStorage.save(config);
+      idbConfigStorage.save(saved).catch(() => {});
       message.success(editing ? '配置已更新' : '配置已保存');
       setEditing(null);
       form.resetFields();
@@ -89,12 +91,14 @@ const ApiConfigPage: React.FC = () => {
 
   const handleDelete = (id: string) => {
     configStorage.delete(id);
+    idbConfigStorage.delete(id).catch(() => {});
     message.success('已删除');
     loadConfigs();
   };
 
   const handleSetDefault = (config: AIModelConfig) => {
-    configStorage.save({ ...config, isDefault: true });
+    const saved = configStorage.save({ ...config, isDefault: true });
+    idbConfigStorage.save(saved).catch(() => {});
     message.success(`已将 ${config.name} 设为默认`);
     loadConfigs();
   };
