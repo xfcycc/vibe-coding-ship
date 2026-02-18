@@ -16,7 +16,10 @@ export interface PromptBuildParams {
 export function formatStatesForPrompt(states: StateItem[]): string {
   if (!states || states.length === 0) return '（暂无状态数据）';
   return states.map(s => {
-    const vals = s.stateValues.length > 0 ? s.stateValues.join('、') : '未定义';
+    const enums = s.enumValues?.length ? s.enumValues : s.stateValues.map(v => ({ key: v, value: '' }));
+    const vals = enums.length > 0
+      ? enums.map(e => e.value ? `${e.key}(${e.value})` : e.key).join('、')
+      : '未定义';
     const desc = s.description ? ` - ${s.description}` : '';
     return `- **${s.stateName}**: ${vals}${desc}`;
   }).join('\n');
@@ -129,7 +132,7 @@ ${content}
 
 export function buildAIExtractPrompt(content: string): string {
   return `# 任务
-从以下文档中提取所有"业务状态"和"数据库表结构"信息，以 JSON 格式输出。
+从以下文档中提取所有"业务状态/枚举"和"数据库表结构"信息，以 JSON 格式输出。
 
 # 文档内容
 ${content}
@@ -139,7 +142,14 @@ ${content}
 \`\`\`json
 {
   "states": [
-    { "stateName": "状态名称", "stateValues": ["值1", "值2"], "description": "说明" }
+    {
+      "stateName": "状态名称",
+      "stateValues": ["显示名1", "显示名2"],
+      "enumValues": [
+        { "key": "显示名/中文", "value": "字典值/数字或英文" }
+      ],
+      "description": "说明"
+    }
   ],
   "tables": [
     {
@@ -156,6 +166,8 @@ ${content}
 # 要求
 - 如果文档中没有状态信息，states 返回空数组
 - 如果文档中没有表结构信息，tables 返回空数组
+- 状态的 enumValues 中，key 是显示名（通常为中文），value 是字典值（通常为数字或英文，如 0/1/2 或 PENDING/ACTIVE）
+- 如果文档中没有明确的字典值，value 可以推断（如用 0, 1, 2 递增，或英文大写）
 - 字段类型只使用：VARCHAR, INT, BIGINT, TEXT, BOOLEAN, DATETIME, JSON, DECIMAL
 - 只输出 JSON，不要有其他文字`;
 }

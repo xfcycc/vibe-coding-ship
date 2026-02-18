@@ -78,10 +78,16 @@ export interface WaitArea {
   type: 'stateManagement' | 'tableManagement' | 'custom';
 }
 
+export interface StateEnumValue {
+  key: string;   // 显示名/中文，如 "待审核"
+  value: string;  // 字典值/英文或数字，如 "0" 或 "PENDING"
+}
+
 export interface StateItem {
   id: string;
   stateName: string;
-  stateValues: string[];
+  stateValues: string[];          // 保持兼容旧数据
+  enumValues?: StateEnumValue[];  // 新的 key/value 枚举
   description: string;
   relatedDocs: string[];
   relatedTables: string[];
@@ -94,6 +100,8 @@ export interface TableField {
   description: string;
   isRequired: boolean;
   relatedState: string;
+  defaultValue?: string;
+  isPrimaryKey?: boolean;
 }
 
 export interface TableItem {
@@ -119,6 +127,7 @@ export interface DocumentVersion {
   versionId: string;
   content: string;
   createdAt: string;
+  source?: 'ai' | 'manual'; // AI生成 vs 用户手动编辑
 }
 
 export interface StepDocument {

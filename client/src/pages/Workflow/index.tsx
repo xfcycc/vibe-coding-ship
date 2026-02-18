@@ -1,7 +1,7 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import {
   Layout, Typography, Button, Space, Input, message, Empty, Steps, Tooltip,
-  Card, Tag, Drawer, Collapse,
+  Card, Tag, Drawer, Collapse, Modal, Select,
 } from 'antd';
 import {
   PlayCircleOutlined, StopOutlined, EditOutlined,
@@ -10,6 +10,7 @@ import {
   CopyOutlined, BulbOutlined, LoadingOutlined,
   ThunderboltOutlined, RobotOutlined,
   ExperimentOutlined, WarningOutlined, RollbackOutlined,
+  FormOutlined, SwapOutlined, SaveOutlined, SyncOutlined,
 } from '@ant-design/icons';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -22,9 +23,32 @@ import {
 import { configStorage } from '../../services/storage';
 import WaitingAreaPanel from '../../components/WaitingArea/WaitingAreaPanel';
 import DiffViewerComponent from '../../components/DiffViewer/DiffViewerComponent';
+import ReactDiffViewer, { DiffMethod } from 'react-diff-viewer-continued';
 import { exportProjectAsZip, exportSingleDoc } from '../../utils/export';
 import { extractStates, extractTables } from '../../utils/docExtractor';
+import { injectStatesIntoDoc, injectTablesIntoDoc, buildDocMergePrompt } from '../../utils/docInjector';
+import { computeMergeActions, formatMergeMessage } from '../../utils/waitAreaMerge';
 import { v4 as uuidv4 } from 'uuid';
+import type { AIModelConfig } from '../../types';
+
+function buildMergeRequestParams(prompt: string, config: AIModelConfig): { url: string; headers: Record<string, string>; body: string } {
+  const { provider, apiKey, baseUrl, model, temperature, maxTokens } = config;
+  if (provider === 'claude') {
+    return {
+      url: `${baseUrl}/messages`,
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({ model, max_tokens: maxTokens, temperature, messages: [{ role: 'user', content: prompt }] }),
+    };
+  }
+  return {
+    url: `${baseUrl}/chat/completions`,
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model, max_tokens: maxTokens, temperature, stream: false,
+      messages: [{ role: 'system', content: '你是一位资深技术文档专家，擅长精确修改 Markdown 文档。' }, { role: 'user', content: prompt }],
+    }),
+  };
+}
 
 const { Content, Sider } = Layout;
 const { Title, Text } = Typography;
@@ -97,6 +121,14 @@ const WorkflowPage: React.FC = () => {
   const [currentPhase, setCurrentPhase] = useState<WorkflowPhase>('idle');
   const [memorySummaryStream, setMemorySummaryStream] = useState('');
   const [isMemoryStreaming, setIsMemoryStreaming] = useState(false);
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [editContent, setEditContent] = useState('');
+  const [versionDiffVisible, setVersionDiffVisible] = useState(false);
+  const [versionDiffLeft, setVersionDiffLeft] = useState<number>(0);
+  const [versionDiffRight, setVersionDiffRight] = useState<number>(0);
+  const [pushDiffVisible, setPushDiffVisible] = useState(false);
+  const [pushDiffContent, setPushDiffContent] = useState('');
+  const [isPushing, setIsPushing] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const streamContentRef = useRef('');
@@ -166,7 +198,7 @@ const WorkflowPage: React.FC = () => {
   const displayContent = isStreaming ? streamContent : (currentDoc?.content || '');
   const currentReasoning = isStreaming ? streamReasoningRef.current : (reasoningMap[currentStep] || '');
 
-  const doAIExtract = async (docContent: string, node: typeof currentNode, apiConfig: any, signal: AbortSignal) => {
+  const doAIExtract = (docContent: string, node: typeof currentNode, apiConfig: any, signal: AbortSignal) => {
     if (!node || !template || !docContent) return;
 
     const relatedAreas = node.relatedWaitAreas || [];
@@ -182,96 +214,52 @@ const WorkflowPage: React.FC = () => {
 
     if (!hasStateArea && !hasTableArea) return;
 
-    // Phase 1: Fast regex extraction
+    // Phase 1: instant regex extraction
     const regexStates = hasStateArea ? extractStates(docContent) : [];
     const regexTables = hasTableArea ? extractTables(docContent) : [];
 
-    // Phase 2: AI extraction (may fail, non-blocking)
-    let aiStates: Array<{ stateName: string; stateValues: string[]; description: string }> = [];
-    let aiTables: Array<{ tableName: string; description: string; fields: Array<{ fieldName: string; fieldType: string; description: string; isRequired: boolean }> }> = [];
-    try {
-      const aiResult = await aiExtractFromDoc(docContent, apiConfig, signal);
-      aiStates = aiResult.states;
-      aiTables = aiResult.tables;
-    } catch {
-      // AI extraction failed, fall back to regex only
+    const regexMerge = computeMergeActions(
+      project?.states || [], project?.tables || [],
+      hasStateArea ? regexStates : [], hasTableArea ? regexTables : [],
+      node.nodeId,
+    );
+
+    for (const action of regexMerge.actions) {
+      dispatch(action as any);
     }
 
-    // Merge results: regex first, then AI adds anything regex missed
-    const existingStateNames = new Set((project?.states || []).map(s => s.stateName));
-    const addedStateNames = new Set<string>();
-    let stateCount = 0;
-    let tableCount = 0;
-
-    if (hasStateArea) {
-      // Add regex-extracted states
-      for (const s of regexStates) {
-        if (!existingStateNames.has(s.stateName) && !addedStateNames.has(s.stateName)) {
-          dispatch({
-            type: 'ADD_STATE',
-            payload: { ...s, relatedDocs: [node.nodeId] },
-          });
-          addedStateNames.add(s.stateName);
-          stateCount++;
-        }
-      }
-      // Add AI-extracted states (only those not already found by regex)
-      for (const s of aiStates) {
-        if (!existingStateNames.has(s.stateName) && !addedStateNames.has(s.stateName)) {
-          dispatch({
-            type: 'ADD_STATE',
-            payload: {
-              id: uuidv4(), stateName: s.stateName, stateValues: s.stateValues,
-              description: s.description, relatedDocs: [node.nodeId], relatedTables: [],
-            },
-          });
-          addedStateNames.add(s.stateName);
-          stateCount++;
-        }
-      }
+    const regexMsg = formatMergeMessage(regexMerge);
+    if (regexMsg) {
+      message.success(`已同步到等待区：${regexMsg}`);
     }
 
-    const existingTableNames = new Set((project?.tables || []).map(t => t.tableName));
-    const addedTableNames = new Set<string>();
+    // Phase 2: AI supplementary extraction (background, non-blocking)
+    const currentStates = [...(project?.states || []), ...regexMerge.actions.filter(a => a.type === 'ADD_STATE').map(a => a.payload as any)];
+    const currentTables = [...(project?.tables || []), ...regexMerge.actions.filter(a => a.type === 'ADD_TABLE').map(a => a.payload as any)];
 
-    if (hasTableArea) {
-      // Add regex-extracted tables
-      for (const t of regexTables) {
-        if (!existingTableNames.has(t.tableName) && !addedTableNames.has(t.tableName)) {
-          dispatch({
-            type: 'ADD_TABLE',
-            payload: { ...t, relatedDocs: [node.nodeId] },
-          });
-          addedTableNames.add(t.tableName);
-          tableCount++;
-        }
-      }
-      // Add AI-extracted tables (only those not already found by regex)
-      for (const t of aiTables) {
-        if (!existingTableNames.has(t.tableName) && !addedTableNames.has(t.tableName)) {
-          dispatch({
-            type: 'ADD_TABLE',
-            payload: {
-              id: uuidv4(), tableName: t.tableName, description: t.description,
-              fields: t.fields.map(f => ({
-                id: uuidv4(), fieldName: f.fieldName, fieldType: f.fieldType,
-                description: f.description, isRequired: f.isRequired, relatedState: '',
-              })),
-              relatedDocs: [node.nodeId],
-            },
-          });
-          addedTableNames.add(t.tableName);
-          tableCount++;
-        }
-      }
-    }
+    aiExtractFromDoc(docContent, apiConfig, signal).then(aiResult => {
+      const regexStateNames = new Set(regexStates.map(s => s.stateName));
+      const regexTableNames = new Set(regexTables.map(t => t.tableName));
+      const aiOnlyStates = aiResult.states.filter(s => !regexStateNames.has(s.stateName));
+      const aiOnlyTables = aiResult.tables.filter(t => !regexTableNames.has(t.tableName));
 
-    if (stateCount > 0 || tableCount > 0) {
-      const parts: string[] = [];
-      if (stateCount > 0) parts.push(`${stateCount} 个状态`);
-      if (tableCount > 0) parts.push(`${tableCount} 个表结构`);
-      message.success(`已提取 ${parts.join('、')} 到等待区（AI双重提取）`);
-    }
+      if (aiOnlyStates.length === 0 && aiOnlyTables.length === 0) return;
+
+      const aiMerge = computeMergeActions(
+        currentStates, currentTables,
+        hasStateArea ? aiOnlyStates : [], hasTableArea ? aiOnlyTables : [],
+        node.nodeId,
+      );
+
+      for (const action of aiMerge.actions) {
+        dispatch(action as any);
+      }
+
+      const aiMsg = formatMergeMessage(aiMerge);
+      if (aiMsg) {
+        message.success(`AI 补充提取：${aiMsg}`);
+      }
+    }).catch(() => {});
   };
 
   const doMemorySummary = async (stepName: string, content: string, apiConfig: any, signal: AbortSignal) => {
@@ -379,8 +367,8 @@ const WorkflowPage: React.FC = () => {
     }
 
     // Save the document
-    const newVersion = { versionId: uuidv4(), content: fullContent, createdAt: new Date().toISOString() };
-    const versions = [...(currentDoc?.versions || []), newVersion].slice(-3);
+    const newVersion = { versionId: uuidv4(), content: fullContent, createdAt: new Date().toISOString(), source: 'ai' as const };
+    const versions = [...(currentDoc?.versions || []), newVersion].slice(-5);
     dispatch({
       type: 'UPDATE_DOCUMENT',
       payload: {
@@ -480,8 +468,8 @@ const WorkflowPage: React.FC = () => {
 
   const handleAcceptNew = () => {
     if (!currentNode) return;
-    const newVersion = { versionId: uuidv4(), content: newContent, createdAt: new Date().toISOString() };
-    const versions = [...(currentDoc?.versions || []), newVersion].slice(-3);
+    const newVersion = { versionId: uuidv4(), content: newContent, createdAt: new Date().toISOString(), source: 'ai' as const };
+    const versions = [...(currentDoc?.versions || []), newVersion].slice(-5);
     dispatch({
       type: 'UPDATE_DOCUMENT',
       payload: {
@@ -530,6 +518,159 @@ const WorkflowPage: React.FC = () => {
         updates: { content: currentDoc.versions[idx].content, currentVersionIndex: idx },
       },
     });
+    if (isEditMode) {
+      setEditContent(currentDoc.versions[idx].content);
+    }
+  };
+
+  const handleEnterEditMode = () => {
+    setEditContent(displayContent);
+    setIsEditMode(true);
+  };
+
+  const handleExitEditMode = () => {
+    setIsEditMode(false);
+    setEditContent('');
+  };
+
+  const handleSaveAsVersion = () => {
+    if (!currentNode) return;
+    const contentToSave = isEditMode ? editContent : displayContent;
+    const newVersion = { versionId: uuidv4(), content: contentToSave, createdAt: new Date().toISOString(), source: 'manual' as const };
+    const versions = [...(currentDoc?.versions || []), newVersion].slice(-5);
+    dispatch({
+      type: 'UPDATE_DOCUMENT',
+      payload: {
+        nodeId: currentNode.nodeId,
+        updates: { content: contentToSave, versions, currentVersionIndex: versions.length - 1 },
+      },
+    });
+    setIsEditMode(false);
+    setEditContent('');
+    message.success('已保存为新版本');
+
+    if (currentNode.relatedWaitAreas.length > 0) {
+      Modal.confirm({
+        title: '同步到等待区',
+        content: '文档已修改，是否同步状态和表结构到等待区？',
+        okText: '同步',
+        cancelText: '跳过',
+        onOk: () => syncDocToWaitArea(contentToSave),
+      });
+    }
+  };
+
+  const syncDocToWaitArea = (content: string) => {
+    // Phase 1: instant regex extraction
+    const regexStates = extractStates(content);
+    const regexTables = extractTables(content);
+
+    const regexMerge = computeMergeActions(
+      project?.states || [], project?.tables || [],
+      regexStates, regexTables, currentNode!.nodeId,
+    );
+
+    for (const action of regexMerge.actions) {
+      dispatch(action as any);
+    }
+
+    const regexMsg = formatMergeMessage(regexMerge);
+    if (regexMsg) {
+      message.success(`已同步到等待区：${regexMsg}`);
+    } else {
+      message.info('文档内容与等待区一致，无需更新');
+    }
+
+    // Phase 2: AI补充提取（后台异步，不阻塞用户）
+    const apiConfig = configStorage.getDefault();
+    if (apiConfig) {
+      const nodeId = currentNode!.nodeId;
+      const currentStates = [...(project?.states || []), ...regexMerge.actions.filter(a => a.type === 'ADD_STATE').map(a => a.payload as any)];
+      const currentTables = [...(project?.tables || []), ...regexMerge.actions.filter(a => a.type === 'ADD_TABLE').map(a => a.payload as any)];
+
+      aiExtractFromDoc(content, apiConfig).then(aiResult => {
+        const regexStateNames = new Set(regexStates.map(s => s.stateName));
+        const regexTableNames = new Set(regexTables.map(t => t.tableName));
+        const aiOnlyStates = aiResult.states.filter(s => !regexStateNames.has(s.stateName));
+        const aiOnlyTables = aiResult.tables.filter(t => !regexTableNames.has(t.tableName));
+
+        if (aiOnlyStates.length === 0 && aiOnlyTables.length === 0) return;
+
+        const aiMerge = computeMergeActions(
+          currentStates, currentTables,
+          aiOnlyStates, aiOnlyTables, nodeId,
+        );
+
+        for (const action of aiMerge.actions) {
+          dispatch(action as any);
+        }
+
+        const aiMsg = formatMergeMessage(aiMerge);
+        if (aiMsg) {
+          message.success(`AI 补充提取：${aiMsg}`);
+        }
+      }).catch(() => {});
+    }
+  };
+
+  const handlePushToDoc = async () => {
+    if (!currentNode || !currentDoc?.content) return;
+    setIsPushing(true);
+
+    const stateResult = injectStatesIntoDoc(currentDoc.content, project.states);
+    const tableResult = injectTablesIntoDoc(stateResult.newContent, project.tables);
+
+    const allModified = [...stateResult.modifiedSections, ...tableResult.modifiedSections];
+
+    if (allModified.length > 0) {
+      setPushDiffContent(tableResult.newContent);
+      setPushDiffVisible(true);
+      setIsPushing(false);
+    } else {
+      const apiConfig = configStorage.getDefault();
+      if (apiConfig) {
+        try {
+          message.loading({ content: 'AI 正在合并等待区数据到文档...', key: 'push', duration: 0 });
+          const prompt = buildDocMergePrompt(currentDoc.content, project.states, project.tables);
+          const { url, headers, body } = buildMergeRequestParams(prompt, apiConfig);
+          const resp = await fetch(url, { method: 'POST', headers, body });
+          if (!resp.ok) throw new Error(`${resp.status}`);
+          const data = await resp.json();
+          let text = '';
+          if (apiConfig.provider === 'claude') {
+            text = data.content?.[0]?.text || '';
+          } else {
+            text = data.choices?.[0]?.message?.content || '';
+          }
+          if (text) {
+            setPushDiffContent(text);
+            setPushDiffVisible(true);
+          } else {
+            message.warning('AI 未返回有效内容');
+          }
+          message.destroy('push');
+        } catch (err: any) {
+          message.destroy('push');
+          message.error(`AI 合并失败: ${err.message}`);
+        }
+      } else {
+        message.info('无法自动定位文档中的状态/表段落，请配置 AI API 以启用智能合并');
+      }
+      setIsPushing(false);
+    }
+  };
+
+  const handleAcceptPush = () => {
+    if (!currentNode || !pushDiffContent) return;
+    const newVersion = { versionId: uuidv4(), content: pushDiffContent, createdAt: new Date().toISOString(), source: 'manual' as const };
+    const versions = [...(currentDoc?.versions || []), newVersion].slice(-5);
+    dispatch({
+      type: 'UPDATE_DOCUMENT',
+      payload: { nodeId: currentNode.nodeId, updates: { content: pushDiffContent, versions, currentVersionIndex: versions.length - 1 } },
+    });
+    setPushDiffVisible(false);
+    setPushDiffContent('');
+    message.success('等待区数据已同步到文档');
   };
 
   useEffect(() => {
@@ -537,6 +678,11 @@ const WorkflowPage: React.FC = () => {
       contentRef.current.scrollTop = contentRef.current.scrollHeight;
     }
   }, [streamContent, isStreaming]);
+
+  useEffect(() => {
+    setIsEditMode(false);
+    setEditContent('');
+  }, [currentStep]);
 
   const latestMemory = getMemorySummary(currentStep + 1);
 
@@ -778,14 +924,50 @@ const WorkflowPage: React.FC = () => {
             />
           )}
 
-          {displayContent ? (
+          {displayContent || isEditMode ? (
             <Card
               style={{ borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.04)', minHeight: 200 }}
               bodyStyle={{ padding: '20px 24px' }}
+              extra={
+                !isStreaming && (displayContent || isEditMode) && (
+                  <Space>
+                    {isEditMode ? (
+                      <>
+                        <Button size="small" icon={<EyeOutlined />} onClick={handleExitEditMode} style={{ borderRadius: 6 }}>
+                          取消
+                        </Button>
+                        <Button
+                          type="primary"
+                          size="small"
+                          icon={<SaveOutlined />}
+                          onClick={handleSaveAsVersion}
+                          style={{ borderRadius: 6 }}
+                        >
+                          保存为新版本
+                        </Button>
+                      </>
+                    ) : (
+                      <Button size="small" icon={<FormOutlined />} onClick={handleEnterEditMode} style={{ borderRadius: 6 }}>
+                        编辑
+                      </Button>
+                    )}
+                  </Space>
+                )
+              }
             >
-              <div className={`markdown-body ${isStreaming && currentPhase === 'generating' ? 'streaming-cursor' : ''}`}>
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayContent}</ReactMarkdown>
-              </div>
+              {isEditMode ? (
+                <Input.TextArea
+                  value={editContent}
+                  onChange={e => setEditContent(e.target.value)}
+                  placeholder="在此编辑 Markdown 文档..."
+                  autoSize={{ minRows: 20, maxRows: 60 }}
+                  style={{ fontFamily: 'ui-monospace, monospace', fontSize: 14 }}
+                />
+              ) : (
+                <div className={`markdown-body ${isStreaming && currentPhase === 'generating' ? 'streaming-cursor' : ''}`}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayContent}</ReactMarkdown>
+                </div>
+              )}
             </Card>
           ) : (
             <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 300 }}>
@@ -832,25 +1014,45 @@ const WorkflowPage: React.FC = () => {
           )}
 
           {/* Version history */}
-          {currentDoc?.versions && currentDoc.versions.length > 1 && (
+          {currentDoc?.versions && currentDoc.versions.length > 0 && (
             <Card
               size="small"
               style={{ marginTop: 12, borderRadius: 12 }}
               bodyStyle={{ padding: '8px 16px' }}
             >
-              <Space>
+              <Space wrap>
                 <Text type="secondary" style={{ fontSize: 12 }}>版本记录:</Text>
                 {currentDoc.versions.map((v, idx) => (
+                  <Space key={v.versionId} size={4}>
+                    <Button
+                      size="small"
+                      type={idx === currentDoc.currentVersionIndex ? 'primary' : 'default'}
+                      onClick={() => handleSwitchVersion(idx)}
+                      style={{ borderRadius: 6, fontSize: 12 }}
+                    >
+                      V{idx + 1}
+                    </Button>
+                    {v.source && (
+                      <Tag color={v.source === 'ai' ? 'blue' : 'green'} style={{ margin: 0, fontSize: 10 }}>
+                        {v.source === 'ai' ? 'AI' : '手动'}
+                      </Tag>
+                    )}
+                  </Space>
+                ))}
+                {currentDoc.versions.length >= 2 && (
                   <Button
-                    key={v.versionId}
                     size="small"
-                    type={idx === currentDoc.currentVersionIndex ? 'primary' : 'default'}
-                    onClick={() => handleSwitchVersion(idx)}
+                    icon={<SwapOutlined />}
+                    onClick={() => {
+                      setVersionDiffLeft(0);
+                      setVersionDiffRight(currentDoc.versions.length - 1);
+                      setVersionDiffVisible(true);
+                    }}
                     style={{ borderRadius: 6, fontSize: 12 }}
                   >
-                    V{idx + 1}
+                    对比版本
                   </Button>
-                ))}
+                )}
               </Space>
             </Card>
           )}
@@ -966,6 +1168,22 @@ const WorkflowPage: React.FC = () => {
           </div>
         )}
 
+        {/* Push to doc button */}
+        {currentDoc?.content && (project.states.length > 0 || project.tables.length > 0) && (
+          <div style={{ padding: '0 12px 8px' }}>
+            <Button
+              size="small"
+              icon={<SyncOutlined spin={isPushing} />}
+              onClick={handlePushToDoc}
+              loading={isPushing}
+              style={{ width: '100%', borderRadius: 6 }}
+              type="dashed"
+            >
+              推送到文档
+            </Button>
+          </div>
+        )}
+
         <WaitingAreaPanel />
       </Sider>
 
@@ -1015,6 +1233,85 @@ const WorkflowPage: React.FC = () => {
           <Empty description="暂无前置文档" />
         )}
       </Drawer>
+
+      {/* Version Diff Modal */}
+      <Modal
+        title="对比版本差异"
+        open={versionDiffVisible}
+        onCancel={() => setVersionDiffVisible(false)}
+        footer={null}
+        width={900}
+        destroyOnClose
+      >
+        {currentDoc?.versions && currentDoc.versions.length >= 2 && (
+          <div>
+            <Space style={{ marginBottom: 12 }}>
+              <span>左侧版本:</span>
+              <Select
+                value={versionDiffLeft}
+                onChange={setVersionDiffLeft}
+                style={{ width: 120 }}
+                options={currentDoc.versions.map((v, idx) => ({
+                  value: idx,
+                  label: `V${idx + 1}${v.source ? ` (${v.source === 'ai' ? 'AI' : '手动'})` : ''}`,
+                }))}
+              />
+              <span>右侧版本:</span>
+              <Select
+                value={versionDiffRight}
+                onChange={setVersionDiffRight}
+                style={{ width: 120 }}
+                options={currentDoc.versions.map((v, idx) => ({
+                  value: idx,
+                  label: `V${idx + 1}${v.source ? ` (${v.source === 'ai' ? 'AI' : '手动'})` : ''}`,
+                }))}
+              />
+            </Space>
+            <div style={{ maxHeight: 500, overflow: 'auto', borderRadius: 8, border: '1px solid #e5e7eb' }}>
+              <ReactDiffViewer
+                oldValue={currentDoc.versions[versionDiffLeft]?.content || ''}
+                newValue={currentDoc.versions[versionDiffRight]?.content || ''}
+                splitView={true}
+                compareMethod={DiffMethod.WORDS}
+                leftTitle={`V${versionDiffLeft + 1}`}
+                rightTitle={`V${versionDiffRight + 1}`}
+                styles={{ contentText: { fontSize: '13px', lineHeight: '1.6' } }}
+              />
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Push to Doc Diff Modal */}
+      <Modal
+        title="等待区数据 → 文档同步预览"
+        open={pushDiffVisible}
+        onCancel={() => { setPushDiffVisible(false); setPushDiffContent(''); }}
+        width={900}
+        destroyOnClose
+        footer={
+          <Space>
+            <Button onClick={() => { setPushDiffVisible(false); setPushDiffContent(''); }}>取消</Button>
+            <Button type="primary" onClick={handleAcceptPush} style={{ background: '#52c41a', borderColor: '#52c41a' }}>
+              接受修改
+            </Button>
+          </Space>
+        }
+      >
+        {currentDoc && pushDiffContent && (
+          <div style={{ maxHeight: 500, overflow: 'auto', borderRadius: 8, border: '1px solid #e5e7eb' }}>
+            <ReactDiffViewer
+              oldValue={currentDoc.content}
+              newValue={pushDiffContent}
+              splitView={true}
+              compareMethod={DiffMethod.WORDS}
+              leftTitle="当前文档"
+              rightTitle="同步后文档"
+              styles={{ contentText: { fontSize: '13px', lineHeight: '1.6' } }}
+            />
+          </div>
+        )}
+      </Modal>
     </Layout>
   );
 };

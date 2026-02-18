@@ -1,18 +1,22 @@
 import React, { useState } from 'react';
 import {
-  Collapse, Button, Space, Input, Select, Tag, Modal, Form,
-  Typography, Empty, Popconfirm, Switch, Tooltip, message, Spin,
+  Collapse, Button, Space, Input, Select, Tag, Modal, Form, Table,
+  Typography, Empty, Popconfirm, Switch, Tooltip, message, Spin, Dropdown,
 } from 'antd';
+import type { MenuProps } from 'antd';
 import {
   PlusOutlined, DeleteOutlined, EditOutlined, DatabaseOutlined,
   PartitionOutlined, SyncOutlined, RobotOutlined, FileTextOutlined,
+  DownloadOutlined, MinusCircleOutlined,
 } from '@ant-design/icons';
 import { useProject } from '../../contexts/ProjectContext';
-import type { StateItem, TableItem, TableField } from '../../types';
+import type { StateItem, StateEnumValue, TableItem, TableField } from '../../types';
 import { aiExtractFromDoc } from '../../services/aiDirect';
 import { extractStates, extractTables } from '../../utils/docExtractor';
+import { computeMergeActions, formatMergeMessage } from '../../utils/waitAreaMerge';
 import { configStorage } from '../../services/storage';
 import { v4 as uuidv4 } from 'uuid';
+import { generateDDL } from '../../utils/ddlExport';
 
 const { Text } = Typography;
 const { Panel } = Collapse;
@@ -26,20 +30,22 @@ const WaitingAreaPanel: React.FC = () => {
   const [stateForm] = Form.useForm();
   const [tableForm] = Form.useForm();
   const [editingFields, setEditingFields] = useState<TableField[]>([]);
+  const [editingEnumValues, setEditingEnumValues] = useState<StateEnumValue[]>([]);
   const [isExtracting, setIsExtracting] = useState(false);
 
   if (!project) return null;
 
-  // State Management
   const handleSaveState = () => {
     stateForm.validateFields().then(values => {
+      const cleanedEnums = editingEnumValues.filter(e => e.key.trim());
       const stateItem: StateItem = {
         id: editingState?.id || uuidv4(),
         stateName: values.stateName,
-        stateValues: values.stateValues?.split(',').map((v: string) => v.trim()).filter(Boolean) || [],
+        stateValues: cleanedEnums.map(e => e.key),
+        enumValues: cleanedEnums,
         description: values.description || '',
-        relatedDocs: [],
-        relatedTables: [],
+        relatedDocs: editingState?.relatedDocs || [],
+        relatedTables: editingState?.relatedTables || [],
       };
 
       if (editingState) {
@@ -50,6 +56,7 @@ const WaitingAreaPanel: React.FC = () => {
       setStateModalOpen(false);
       setEditingState(null);
       stateForm.resetFields();
+      setEditingEnumValues([]);
     });
   };
 
@@ -57,13 +64,16 @@ const WaitingAreaPanel: React.FC = () => {
     setEditingState(state);
     stateForm.setFieldsValue({
       stateName: state.stateName,
-      stateValues: state.stateValues.join(', '),
       description: state.description,
     });
+    setEditingEnumValues(
+      state.enumValues?.length
+        ? [...state.enumValues]
+        : state.stateValues.map(v => ({ key: v, value: '' }))
+    );
     setStateModalOpen(true);
   };
 
-  // Table Management
   const handleSaveTable = () => {
     tableForm.validateFields().then(values => {
       const tableItem: TableItem = {
@@ -71,7 +81,7 @@ const WaitingAreaPanel: React.FC = () => {
         tableName: values.tableName,
         description: values.description || '',
         fields: editingFields,
-        relatedDocs: [],
+        relatedDocs: editingTable?.relatedDocs || [],
       };
 
       if (editingTable) {
@@ -88,10 +98,7 @@ const WaitingAreaPanel: React.FC = () => {
 
   const openEditTable = (table: TableItem) => {
     setEditingTable(table);
-    tableForm.setFieldsValue({
-      tableName: table.tableName,
-      description: table.description,
-    });
+    tableForm.setFieldsValue({ tableName: table.tableName, description: table.description });
     setEditingFields([...table.fields]);
     setTableModalOpen(true);
   };
@@ -99,125 +106,116 @@ const WaitingAreaPanel: React.FC = () => {
   const addField = () => {
     setEditingFields([
       ...editingFields,
-      {
-        id: uuidv4(),
-        fieldName: '',
-        fieldType: 'VARCHAR',
-        description: '',
-        isRequired: false,
-        relatedState: '',
-      },
+      { id: uuidv4(), fieldName: '', fieldType: 'VARCHAR', description: '', isRequired: false, relatedState: '' },
     ]);
   };
 
   const updateField = (id: string, updates: Partial<TableField>) => {
-    setEditingFields(fields =>
-      fields.map(f => (f.id === id ? { ...f, ...updates } : f))
-    );
+    setEditingFields(fields => fields.map(f => (f.id === id ? { ...f, ...updates } : f)));
   };
 
   const removeField = (id: string) => {
     setEditingFields(fields => fields.filter(f => f.id !== id));
   };
 
+  const handleExportDDL = (table: TableItem, dialect: 'postgresql' | 'mysql' | 'oracle') => {
+    const ddl = generateDDL(table, dialect);
+    navigator.clipboard.writeText(ddl);
+    message.success(`${dialect.toUpperCase()} DDL 已复制到剪贴板`);
+  };
+
+  const handleExportAllDDL = (dialect: 'postgresql' | 'mysql' | 'oracle') => {
+    const allDDL = project.tables.map(t => generateDDL(t, dialect)).join('\n\n');
+    const blob = new Blob([allDDL], { type: 'text/sql;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `tables_${dialect}.sql`;
+    a.click();
+    URL.revokeObjectURL(url);
+    message.success(`已导出全部 ${dialect.toUpperCase()} DDL`);
+  };
+
   const handleExtractFromDocs = async () => {
     if (!project) return;
-
     const allContent = project.documents
       .filter(d => d.content)
       .map(d => `## ${d.docName}\n\n${d.content}`)
       .join('\n\n---\n\n');
-
-    if (!allContent) {
-      message.info('暂无已生成的文档内容可供提取');
-      return;
-    }
+    if (!allContent) { message.info('暂无已生成的文档内容可供提取'); return; }
 
     setIsExtracting(true);
 
-    const existingStateNames = new Set(project.states.map(s => s.stateName));
-    const existingTableNames = new Set(project.tables.map(t => t.tableName));
-    const addedStateNames = new Set<string>();
-    const addedTableNames = new Set<string>();
-    let stateCount = 0;
-    let tableCount = 0;
-
-    // Phase 1: Regex extraction (fast, always works)
     const regexStates = extractStates(allContent);
     const regexTables = extractTables(allContent);
 
-    for (const s of regexStates) {
-      if (!existingStateNames.has(s.stateName) && !addedStateNames.has(s.stateName)) {
-        dispatch({ type: 'ADD_STATE', payload: { ...s, relatedDocs: [] } });
-        addedStateNames.add(s.stateName);
-        stateCount++;
-      }
-    }
-    for (const t of regexTables) {
-      if (!existingTableNames.has(t.tableName) && !addedTableNames.has(t.tableName)) {
-        dispatch({ type: 'ADD_TABLE', payload: { ...t, relatedDocs: [] } });
-        addedTableNames.add(t.tableName);
-        tableCount++;
-      }
-    }
+    let allStates = [...regexStates];
+    let allTables = [...regexTables];
 
-    // Phase 2: AI extraction (supplement what regex missed)
     const apiConfig = configStorage.getDefault();
     if (apiConfig) {
       try {
         const aiResult = await aiExtractFromDoc(allContent, apiConfig);
-
+        const regexStateNames = new Set(regexStates.map(s => s.stateName));
+        const regexTableNames = new Set(regexTables.map(t => t.tableName));
         for (const s of aiResult.states) {
-          if (!existingStateNames.has(s.stateName) && !addedStateNames.has(s.stateName)) {
-            dispatch({
-              type: 'ADD_STATE',
-              payload: {
-                id: uuidv4(), stateName: s.stateName, stateValues: s.stateValues,
-                description: s.description, relatedDocs: [], relatedTables: [],
-              },
-            });
-            addedStateNames.add(s.stateName);
-            stateCount++;
+          if (!regexStateNames.has(s.stateName)) {
+            allStates.push({ ...s, id: uuidv4(), relatedDocs: [], relatedTables: [], enumValues: s.stateValues.map(v => ({ key: v, value: '' })) } as any);
           }
         }
-
         for (const t of aiResult.tables) {
-          if (!existingTableNames.has(t.tableName) && !addedTableNames.has(t.tableName)) {
-            dispatch({
-              type: 'ADD_TABLE',
-              payload: {
-                id: uuidv4(), tableName: t.tableName, description: t.description,
-                fields: t.fields.map(f => ({
-                  id: uuidv4(), fieldName: f.fieldName, fieldType: f.fieldType,
-                  description: f.description, isRequired: f.isRequired, relatedState: '',
-                })),
-                relatedDocs: [],
-              },
-            });
-            addedTableNames.add(t.tableName);
-            tableCount++;
+          if (!regexTableNames.has(t.tableName)) {
+            allTables.push({ ...t, id: uuidv4(), relatedDocs: [], fields: t.fields.map(f => ({ ...f, id: uuidv4(), relatedState: '' })) } as any);
           }
         }
-      } catch {
-        // AI failed, regex results already applied
-      }
+      } catch { /* regex results already applied */ }
+    }
+
+    const mergeResult = computeMergeActions(project.states, project.tables, allStates, allTables);
+
+    for (const action of mergeResult.actions) {
+      dispatch(action as any);
     }
 
     setIsExtracting(false);
-
-    if (stateCount > 0 || tableCount > 0) {
-      const parts: string[] = [];
-      if (stateCount > 0) parts.push(`${stateCount} 个状态`);
-      if (tableCount > 0) parts.push(`${tableCount} 个表结构`);
-      message.success(`已提取 ${parts.join('、')}（AI提取）`);
+    const msg = formatMergeMessage(mergeResult);
+    if (msg) {
+      message.success(`${msg}（规则+AI双重提取）`);
     } else {
-      message.info('未发现新的状态或表结构');
+      message.info('文档内容与等待区一致，无需更新');
     }
   };
 
+  const ddlMenuItems = (table: TableItem): MenuProps['items'] => [
+    { key: 'pg', label: 'PostgreSQL', onClick: () => handleExportDDL(table, 'postgresql') },
+    { key: 'mysql', label: 'MySQL', onClick: () => handleExportDDL(table, 'mysql') },
+    { key: 'oracle', label: 'Oracle', onClick: () => handleExportDDL(table, 'oracle') },
+  ];
+
+  const allDDLMenuItems: MenuProps['items'] = [
+    { key: 'pg', label: 'PostgreSQL', onClick: () => handleExportAllDDL('postgresql') },
+    { key: 'mysql', label: 'MySQL', onClick: () => handleExportAllDDL('mysql') },
+    { key: 'oracle', label: 'Oracle', onClick: () => handleExportAllDDL('oracle') },
+  ];
+
+  const fieldColumns = [
+    { title: '字段名', dataIndex: 'fieldName', key: 'fieldName', width: 110, ellipsis: true,
+      render: (v: string, r: TableField) => (
+        <Text style={{ fontSize: 12, fontWeight: r.isPrimaryKey ? 600 : 400 }}>
+          {r.isPrimaryKey ? '🔑 ' : ''}{v}
+        </Text>
+      ),
+    },
+    { title: '类型', dataIndex: 'fieldType', key: 'fieldType', width: 80,
+      render: (v: string) => <Tag style={{ fontSize: 10, margin: 0 }}>{v}</Tag>,
+    },
+    { title: '描述', dataIndex: 'description', key: 'description', ellipsis: true,
+      render: (v: string) => <Text type="secondary" style={{ fontSize: 11 }}>{v || '-'}</Text>,
+    },
+  ];
+
   return (
     <div style={{ padding: '0 12px 12px' }}>
-      {/* Extract from docs button */}
       <div style={{ marginBottom: 8 }}>
         <Button
           size="small"
@@ -231,11 +229,7 @@ const WaitingAreaPanel: React.FC = () => {
         </Button>
       </div>
 
-      <Collapse
-        defaultActiveKey={['states', 'tables']}
-        ghost
-        style={{ background: 'transparent' }}
-      >
+      <Collapse defaultActiveKey={['states', 'tables']} ghost style={{ background: 'transparent' }}>
         {/* State Management */}
         <Panel
           key="states"
@@ -250,44 +244,39 @@ const WaitingAreaPanel: React.FC = () => {
           {project.states.length === 0 ? (
             <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无状态" style={{ margin: '8px 0' }} />
           ) : (
-            <div style={{ maxHeight: 260, overflow: 'auto' }}>
-              {project.states.map(state => (
-                <div
-                  key={state.id}
-                  style={{
-                    padding: '8px 10px',
-                    borderRadius: 8,
-                    background: '#f8f9fc',
-                    marginBottom: 6,
-                    border: '1px solid #f0f0f0',
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <Text strong style={{ fontSize: 13 }}>{state.stateName}</Text>
-                    <Space size={2}>
-                      <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openEditState(state)} />
-                      <Popconfirm title="确认删除?" onConfirm={() => dispatch({ type: 'DELETE_STATE', payload: state.id })}>
-                        <Button size="small" type="text" danger icon={<DeleteOutlined />} />
-                      </Popconfirm>
-                    </Space>
+            <div style={{ maxHeight: 300, overflow: 'auto' }}>
+              {project.states.map(state => {
+                const enums = state.enumValues?.length ? state.enumValues : state.stateValues.map(v => ({ key: v, value: '' }));
+                return (
+                  <div
+                    key={state.id}
+                    style={{ padding: '8px 10px', borderRadius: 8, background: '#f8f9fc', marginBottom: 6, border: '1px solid #f0f0f0' }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Text strong style={{ fontSize: 13 }}>{state.stateName}</Text>
+                      <Space size={2}>
+                        <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openEditState(state)} />
+                        <Popconfirm title="确认删除?" onConfirm={() => dispatch({ type: 'DELETE_STATE', payload: state.id })}>
+                          <Button size="small" type="text" danger icon={<DeleteOutlined />} />
+                        </Popconfirm>
+                      </Space>
+                    </div>
+                    {state.description && <Text type="secondary" style={{ fontSize: 12 }}>{state.description}</Text>}
+                    <div style={{ marginTop: 4 }}>
+                      {enums.map((e, i) => (
+                        <Tag key={i} style={{ fontSize: 11, marginBottom: 2 }}>
+                          {e.key}{e.value ? <span style={{ color: '#8c8c8c', marginLeft: 3 }}>= {e.value}</span> : null}
+                        </Tag>
+                      ))}
+                    </div>
                   </div>
-                  {state.description && (
-                    <Text type="secondary" style={{ fontSize: 12 }}>{state.description}</Text>
-                  )}
-                  <div style={{ marginTop: 4 }}>
-                    {state.stateValues.map(v => (
-                      <Tag key={v} style={{ fontSize: 11, marginBottom: 2 }}>{v}</Tag>
-                    ))}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
           <Button
-            type="dashed"
-            size="small"
-            icon={<PlusOutlined />}
-            onClick={() => { setEditingState(null); stateForm.resetFields(); setStateModalOpen(true); }}
+            type="dashed" size="small" icon={<PlusOutlined />}
+            onClick={() => { setEditingState(null); stateForm.resetFields(); setEditingEnumValues([{ key: '', value: '' }]); setStateModalOpen(true); }}
             style={{ width: '100%', borderRadius: 6, marginTop: 6 }}
           >
             添加状态
@@ -302,30 +291,35 @@ const WaitingAreaPanel: React.FC = () => {
               <DatabaseOutlined style={{ color: '#52c41a' }} />
               <Text strong style={{ fontSize: 13 }}>核心表管理</Text>
               <Tag color="green" style={{ fontSize: 11 }}>{project.tables.length}</Tag>
+              {project.tables.length > 0 && (
+                <Dropdown menu={{ items: allDDLMenuItems }} trigger={['click']}>
+                  <Button size="small" type="text" icon={<DownloadOutlined />} style={{ fontSize: 11 }}>
+                    导出全部DDL
+                  </Button>
+                </Dropdown>
+              )}
             </Space>
           }
         >
           {project.tables.length === 0 ? (
             <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无表结构" style={{ margin: '8px 0' }} />
           ) : (
-            <div style={{ maxHeight: 300, overflow: 'auto' }}>
+            <div style={{ maxHeight: 400, overflow: 'auto' }}>
               {project.tables.map(table => (
                 <div
                   key={table.id}
-                  style={{
-                    padding: '8px 10px',
-                    borderRadius: 8,
-                    background: '#f6ffed',
-                    marginBottom: 6,
-                    border: '1px solid #d9f7be',
-                  }}
+                  style={{ padding: '8px 10px', borderRadius: 8, background: '#f6ffed', marginBottom: 8, border: '1px solid #d9f7be' }}
                 >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
                     <Space size={4}>
                       <DatabaseOutlined style={{ color: '#52c41a', fontSize: 12 }} />
                       <Text strong style={{ fontSize: 13 }}>{table.tableName}</Text>
+                      <Tag style={{ fontSize: 10, margin: 0 }}>{table.fields.length} 字段</Tag>
                     </Space>
                     <Space size={2}>
+                      <Dropdown menu={{ items: ddlMenuItems(table) }} trigger={['click']}>
+                        <Button size="small" type="text" icon={<DownloadOutlined />} />
+                      </Dropdown>
                       <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openEditTable(table)} />
                       <Popconfirm title="确认删除?" onConfirm={() => dispatch({ type: 'DELETE_TABLE', payload: table.id })}>
                         <Button size="small" type="text" danger icon={<DeleteOutlined />} />
@@ -333,43 +327,27 @@ const WaitingAreaPanel: React.FC = () => {
                     </Space>
                   </div>
                   {table.description && (
-                    <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 2 }}>{table.description}</Text>
+                    <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>{table.description}</Text>
                   )}
-                  <div style={{ marginTop: 6 }}>
-                    {table.fields.slice(0, 6).map(f => (
-                      <Tag
-                        key={f.id}
-                        style={{ fontSize: 11, marginBottom: 3, borderRadius: 4 }}
-                        color={f.isRequired ? 'green' : 'default'}
-                      >
-                        {f.fieldName}
-                        <span style={{ color: '#8c8c8c', marginLeft: 3, fontSize: 10 }}>{f.fieldType}</span>
-                      </Tag>
-                    ))}
-                    {table.fields.length > 6 && (
-                      <Tag style={{ fontSize: 11, marginBottom: 3 }}>+{table.fields.length - 6} more</Tag>
-                    )}
-                    {table.fields.length === 0 && (
-                      <Text type="secondary" style={{ fontSize: 11 }}>暂无字段定义</Text>
-                    )}
-                  </div>
-                  {table.relatedDocs?.length > 0 && (
-                    <div style={{ marginTop: 4 }}>
-                      {table.relatedDocs.map(docId => (
-                        <Tag key={docId} style={{ fontSize: 10 }} icon={<FileTextOutlined />} color="blue">
-                          {docId.replace(/-node-\d+/, '')}
-                        </Tag>
-                      ))}
-                    </div>
+                  {table.fields.length > 0 ? (
+                    <Table
+                      dataSource={table.fields}
+                      columns={fieldColumns}
+                      rowKey="id"
+                      size="small"
+                      pagination={false}
+                      style={{ fontSize: 11 }}
+                      scroll={table.fields.length > 8 ? { y: 200 } : undefined}
+                    />
+                  ) : (
+                    <Text type="secondary" style={{ fontSize: 11 }}>暂无字段定义</Text>
                   )}
                 </div>
               ))}
             </div>
           )}
           <Button
-            type="dashed"
-            size="small"
-            icon={<PlusOutlined />}
+            type="dashed" size="small" icon={<PlusOutlined />}
             onClick={() => { setEditingTable(null); tableForm.resetFields(); setEditingFields([]); setTableModalOpen(true); }}
             style={{ width: '100%', borderRadius: 6, marginTop: 6 }}
           >
@@ -382,22 +360,49 @@ const WaitingAreaPanel: React.FC = () => {
       <Modal
         open={stateModalOpen}
         title={editingState ? '编辑状态' : '添加状态'}
-        onCancel={() => { setStateModalOpen(false); setEditingState(null); }}
+        onCancel={() => { setStateModalOpen(false); setEditingState(null); setEditingEnumValues([]); }}
         onOk={handleSaveState}
         okText="保存"
-        width={440}
+        width={520}
       >
         <Form form={stateForm} layout="vertical" style={{ marginTop: 16 }}>
           <Form.Item name="stateName" label="状态名称" rules={[{ required: true, message: '请输入状态名称' }]}>
             <Input placeholder="如: 用户状态、订单状态" />
           </Form.Item>
-          <Form.Item name="stateValues" label="状态值（逗号分隔）">
-            <Input placeholder="如: 待审核, 已激活, 已禁用" />
-          </Form.Item>
           <Form.Item name="description" label="描述">
             <Input.TextArea placeholder="状态说明" rows={2} />
           </Form.Item>
         </Form>
+        <div style={{ marginBottom: 8 }}>
+          <Text strong>枚举值（Key = 显示名/中文，Value = 字典值/英文或数字）</Text>
+          <Button size="small" type="link" icon={<PlusOutlined />} onClick={() => setEditingEnumValues([...editingEnumValues, { key: '', value: '' }])}>
+            添加
+          </Button>
+        </div>
+        {editingEnumValues.map((ev, idx) => (
+          <div key={idx} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 30px', gap: 6, marginBottom: 6, alignItems: 'center' }}>
+            <Input
+              size="small" placeholder="Key（如: 待审核）" value={ev.key}
+              onChange={e => {
+                const next = [...editingEnumValues];
+                next[idx] = { ...next[idx], key: e.target.value };
+                setEditingEnumValues(next);
+              }}
+            />
+            <Input
+              size="small" placeholder="Value（如: 0 或 PENDING）" value={ev.value}
+              onChange={e => {
+                const next = [...editingEnumValues];
+                next[idx] = { ...next[idx], value: e.target.value };
+                setEditingEnumValues(next);
+              }}
+            />
+            <Button
+              size="small" type="text" danger icon={<MinusCircleOutlined />}
+              onClick={() => setEditingEnumValues(editingEnumValues.filter((_, i) => i !== idx))}
+            />
+          </div>
+        ))}
       </Modal>
 
       {/* Table Modal */}
@@ -407,7 +412,7 @@ const WaitingAreaPanel: React.FC = () => {
         onCancel={() => { setTableModalOpen(false); setEditingTable(null); }}
         onOk={handleSaveTable}
         okText="保存"
-        width={640}
+        width={700}
       >
         <Form form={tableForm} layout="vertical" style={{ marginTop: 16 }}>
           <Form.Item name="tableName" label="表名" rules={[{ required: true, message: '请输入表名' }]}>
@@ -420,55 +425,30 @@ const WaitingAreaPanel: React.FC = () => {
 
         <div style={{ marginBottom: 8 }}>
           <Text strong>字段列表</Text>
-          <Button size="small" type="link" icon={<PlusOutlined />} onClick={addField}>
-            添加字段
-          </Button>
+          <Button size="small" type="link" icon={<PlusOutlined />} onClick={addField}>添加字段</Button>
         </div>
 
-        {editingFields.map((field, idx) => (
+        {editingFields.map((field) => (
           <div
             key={field.id}
-            style={{
-              display: 'grid',
-              gridTemplateColumns: '1fr 100px 1fr 40px 30px',
-              gap: 6,
-              marginBottom: 6,
-              alignItems: 'center',
-            }}
+            style={{ display: 'grid', gridTemplateColumns: '1fr 100px 1fr 40px 40px 30px', gap: 6, marginBottom: 6, alignItems: 'center' }}
           >
-            <Input
-              size="small"
-              placeholder="字段名"
-              value={field.fieldName}
-              onChange={e => updateField(field.id, { fieldName: e.target.value })}
-            />
+            <Input size="small" placeholder="字段名" value={field.fieldName} onChange={e => updateField(field.id, { fieldName: e.target.value })} />
             <Select
-              size="small"
-              value={field.fieldType}
-              onChange={v => updateField(field.id, { fieldType: v })}
+              size="small" value={field.fieldType} onChange={v => updateField(field.id, { fieldType: v })}
               options={[
-                { value: 'VARCHAR', label: 'VARCHAR' },
-                { value: 'INT', label: 'INT' },
-                { value: 'BIGINT', label: 'BIGINT' },
-                { value: 'TEXT', label: 'TEXT' },
-                { value: 'BOOLEAN', label: 'BOOLEAN' },
-                { value: 'DATETIME', label: 'DATETIME' },
-                { value: 'JSON', label: 'JSON' },
-                { value: 'DECIMAL', label: 'DECIMAL' },
+                { value: 'VARCHAR', label: 'VARCHAR' }, { value: 'INT', label: 'INT' },
+                { value: 'BIGINT', label: 'BIGINT' }, { value: 'TEXT', label: 'TEXT' },
+                { value: 'BOOLEAN', label: 'BOOLEAN' }, { value: 'DATETIME', label: 'DATETIME' },
+                { value: 'JSON', label: 'JSON' }, { value: 'DECIMAL', label: 'DECIMAL' },
               ]}
             />
-            <Input
-              size="small"
-              placeholder="描述"
-              value={field.description}
-              onChange={e => updateField(field.id, { description: e.target.value })}
-            />
+            <Input size="small" placeholder="描述" value={field.description} onChange={e => updateField(field.id, { description: e.target.value })} />
             <Tooltip title="必填">
-              <Switch
-                size="small"
-                checked={field.isRequired}
-                onChange={v => updateField(field.id, { isRequired: v })}
-              />
+              <Switch size="small" checked={field.isRequired} onChange={v => updateField(field.id, { isRequired: v })} />
+            </Tooltip>
+            <Tooltip title="主键">
+              <Switch size="small" checked={!!field.isPrimaryKey} onChange={v => updateField(field.id, { isPrimaryKey: v })} />
             </Tooltip>
             <Button size="small" type="text" danger icon={<DeleteOutlined />} onClick={() => removeField(field.id)} />
           </div>
