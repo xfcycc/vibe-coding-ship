@@ -33,6 +33,16 @@ AI 编码工作流管控系统 —— 通过预设模板引导、AI 交互辅助
 - IndexedDB 作为主存储（idb 库），自动从 localStorage 迁移
 - localStorage 同步写入作为降级备份
 
+### 界面演示
+
+![image-20260218144549459](https://pic.caiguoyu.cn/typora/202602181445565.png)
+
+![image-20260218144512327](https://pic.caiguoyu.cn/typora/202602181445471.png)
+
+![image-20260218144608450](https://pic.caiguoyu.cn/typora/202602181446550.png)
+
+![image-20260218144635908](https://pic.caiguoyu.cn/typora/202602181446014.png)
+
 ## 技术栈
 
 | 层面 | 技术 |
