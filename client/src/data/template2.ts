@@ -91,92 +91,232 @@ export const TEMPLATE_MVP: WorkflowTemplate = {
       variableList: ['userInput'],
       editTime: new Date().toISOString(),
       creator: 'system',
-      promptContent: `基于用户输入的项目想法：
+      promptContent: `# 任务
+用户用大白话描述了一个项目想法，请帮他整理成结构清晰的项目想法文档。
+
+# 用户的项目想法
 {userInput}
 
-请用简单易懂的语言梳理：
-1. 项目核心是做什么的
-2. 能解决什么具体问题
-3. 面向哪些人使用
+# 文档要求（用简单易懂的语言）
 
-要求：语言口语化转书面语，简洁不冗余，文档格式为Markdown。`,
+## 1. 项目是什么
+- 用一两句话说清楚这个项目做什么
+
+## 2. 解决什么问题
+- 用户目前遇到什么困难
+- 这个项目怎么帮他们解决
+
+## 3. 给谁用
+- 目标用户是什么样的人
+- 他们的基本特征（年龄、职业、习惯）
+
+## 4. 项目亮点
+- 这个项目最吸引人的 2-3 个点
+
+# 输出要求
+- 语言通俗易懂，不使用专业术语
+- 如果用户描述模糊，帮他补充合理的细节
+- Markdown 格式，结构清晰`,
     },
     {
       promptId: 'mvp-prompt-2',
       relatedNodeId: 'mvp-node-2',
-      variableList: ['prevDocs', 'userInput'],
+      variableList: ['prevDocs', 'userInput', 'currentStates'],
       editTime: new Date().toISOString(),
       creator: 'system',
-      promptContent: `结合项目想法梳理内容：
+      promptContent: `# 前置文档
 {prevDocs}
 
-用户补充信息：{userInput}
+# 已有状态数据
+{currentStates}
 
-请筛选出MVP必做的3-5个核心功能，每个功能用1句话描述（只说功能，不讲技术），同时明确哪些功能暂时不做。
-文档格式为Markdown，清晰易懂。`,
+# 任务
+从项目想法中筛选出 MVP 阶段最核心的功能，帮用户理清"先做什么"。
+
+# 用户补充信息
+{userInput}
+
+# 文档要求
+
+## 1. MVP 必做功能（3-5 个）
+- 每个功能用一句大白话描述"能做什么"
+- 标注重要程度（最重要 / 重要 / 需要）
+
+## 2. 暂时不做的功能
+- 列出暂不实现的功能
+- 用一句话说明为什么先不做
+
+## 3. 功能使用流程
+- 用简单的步骤描述：用户打开 → 做什么 → 看到什么
+
+# 输出要求
+- 不要使用技术术语
+- 功能描述要具体，不要抽象
+- Markdown 格式`,
     },
     {
       promptId: 'mvp-prompt-3',
       relatedNodeId: 'mvp-node-3',
-      variableList: ['prevDocs', 'userInput'],
+      variableList: ['prevDocs', 'userInput', 'currentStates'],
       editTime: new Date().toISOString(),
       creator: 'system',
-      promptContent: `结合项目想法和核心功能：
+      promptContent: `# 前置文档
 {prevDocs}
 
-用户补充信息：{userInput}
+# 已有状态数据
+{currentStates}
 
-请用通俗的语言描述：
-1. 目标用户的年龄、需求、使用习惯
-2. 用户使用项目的具体场景（什么时候用、怎么用）
+# 任务
+帮用户详细描绘目标用户画像和使用场景。
 
-避免专业术语，文档格式为Markdown。`,
+# 用户补充信息
+{userInput}
+
+# 文档要求
+
+## 1. 目标用户画像
+- 用户年龄、职业、收入水平
+- 用户的痛点和需求
+- 用户的技术熟悉程度
+
+## 2. 使用场景
+- 描述 2-3 个典型场景："什么时候、在哪里、怎么用"
+- 每个场景讲一个小故事
+
+## 3. 用户期望
+- 用户希望这个产品帮他达成什么效果
+- 用户最在意的体验是什么
+
+# 输出要求
+- 语言口语化，像在给朋友讲故事
+- 场景描述要有画面感
+- Markdown 格式`,
     },
     {
       promptId: 'mvp-prompt-4',
       relatedNodeId: 'mvp-node-4',
-      variableList: ['prevDocs', 'userInput'],
+      variableList: ['prevDocs', 'userInput', 'currentStates'],
       editTime: new Date().toISOString(),
       creator: 'system',
-      promptContent: `结合核心功能：
+      promptContent: `# 前置文档
 {prevDocs}
 
-用户补充信息：{userInput}
+# 已有状态数据
+{currentStates}
 
-请梳理MVP简单落地步骤（无需技术细节），分4-5步，每一步用大白话描述，明确先后顺序，让外行也能看懂落地逻辑。
-文档格式为Markdown。`,
+# 任务
+帮用户梳理 MVP 产品从想法到落地的简单步骤，不涉及任何技术细节。
+
+# 用户补充信息
+{userInput}
+
+# 文档要求
+
+## 落地步骤（4-6 步）
+每步包含：
+- **第 N 步：做什么**（一句话标题）
+- **具体说明**：这一步要做的事情（大白话）
+- **产出物**：这一步完成后能得到什么
+- **注意事项**：这一步容易踩的坑
+
+## 时间预估
+- 每步大致需要多长时间
+- 总共需要多长时间
+
+# 输出要求
+- 步骤清晰，外行一看就懂
+- 避免任何技术词汇
+- Markdown 格式`,
     },
     {
       promptId: 'mvp-prompt-5',
       relatedNodeId: 'mvp-node-5',
-      variableList: ['prevDocs', 'userInput'],
+      variableList: ['prevDocs', 'userInput', 'currentTables'],
       editTime: new Date().toISOString(),
       creator: 'system',
-      promptContent: `结合核心功能：
+      promptContent: `# 前置文档
 {prevDocs}
 
-用户补充信息：{userInput}
+# 已有表结构
+{currentTables}
 
-请梳理项目需要记录的3-5个核心数据，说明每个数据的含义（用大白话），不用涉及表结构、字段等专业内容。
-文档格式为Markdown。`,
+# 任务
+帮用户梳理项目需要记录的核心数据，用大白话解释每类数据的作用。
+
+# 用户补充信息
+{userInput}
+
+# 文档要求
+
+## 1. 核心数据清单（3-8 类）
+每类数据包含：
+- **数据名称**：如"会员信息"
+- **包含哪些内容**：如姓名、电话、注册时间
+- **为什么要记录**：一句话说明作用
+- **大概有多少**：预估数据量级
+
+## 2. 数据之间的关系
+- 用简单的话描述数据之间怎么关联
+- 比如"一个会员可以有多条消费记录"
+
+## 3. 数据管理需求
+- 哪些数据需要经常查看
+- 哪些数据需要统计分析
+
+# 输出要求
+- 不要出现"字段""类型""主键"等技术术语
+- 用生活化的语言解释
+- Markdown 格式`,
     },
     {
       promptId: 'mvp-prompt-6',
       relatedNodeId: 'mvp-node-6',
-      variableList: ['prevDocs', 'userInput'],
+      variableList: ['prevDocs', 'userInput', 'currentStates', 'currentTables'],
       editTime: new Date().toISOString(),
       creator: 'system',
-      promptContent: `结合前面所有步骤的内容：
+      promptContent: `# 前置文档
 {prevDocs}
 
-用户补充信息：{userInput}
+# 已有状态数据
+{currentStates}
 
-请梳理MVP交付清单，明确：
-1. 交付物（核心功能、相关文档）
-2. 交付标准（简单可落地）
-3. 注意事项
+# 已有表结构
+{currentTables}
 
-用通俗的语言描述，方便对接开发人员。文档格式为Markdown。`,
+# 任务
+汇总所有前面步骤的成果，生成一份完整的 MVP 交付清单，方便用户直接拿给开发团队。
+
+# 用户补充信息
+{userInput}
+
+# 文档要求
+
+## 1. 项目概要
+- 一段话总结项目是什么、给谁用、核心功能
+
+## 2. 功能交付清单
+使用表格：
+| 功能名称 | 简要描述 | 优先级 | 备注 |
+
+## 3. 数据需求清单
+- 列出需要存储的核心数据
+
+## 4. 交付标准
+- 功能完成的判断标准
+- 基本的质量要求
+
+## 5. 注意事项
+- 开发时需要注意的关键点
+- 用户特别在意的体验要求
+
+## 6. 后续规划
+- MVP 上线后的改进方向
+
+# 输出要求
+- 这份文档是给开发团队看的"需求说明书"
+- 要求完整、无歧义
+- 语言保持简洁专业
+- Markdown 格式`,
     },
   ],
   waitAreas: [

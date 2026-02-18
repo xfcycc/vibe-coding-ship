@@ -136,194 +136,482 @@ export const TEMPLATE_CODING: WorkflowTemplate = {
     {
       promptId: 'coding-prompt-1',
       relatedNodeId: 'coding-node-1',
-      variableList: ['projectName', 'projectVision'],
+      variableList: ['projectName', 'projectVision', 'userInput'],
       editTime: new Date().toISOString(),
       creator: 'system',
-      promptContent: `基于项目名称【{projectName}】和愿景【{projectVision}】，结合AI编码落地需求，请生成一份完整的"商业模式与交付"文档，包含以下内容：
-1. 项目的商业模式（ToB/ToC/其他）
-2. 核心盈利点（若有）
-3. 交付物清单（需贴合MVP开发，明确文档、代码、部署包等）
-4. 交付标准及验收条件
+      promptContent: `# 项目背景
+- 项目名称：{projectName}
+- 项目愿景：{projectVision}
 
+# 任务
+请生成一份完整的「商业模式与交付」文档，作为项目立项的第一份核心文档。
+
+# 文档要求
+请依次详细阐述以下内容：
+
+## 1. 商业模式
+- 明确 ToB / ToC / 平台模式 / 其他
+- 目标市场和竞争格局简述
+
+## 2. 核心盈利模式
+- 具体盈利方式（订阅、按次付费、增值服务、广告等）
+- 若暂无盈利计划请注明
+
+## 3. 交付物清单
+- 逐项列出 MVP 阶段的所有交付物（代码仓库、文档、部署包、API 等）
+- 每项注明交付形式和验收标准
+
+## 4. 交付标准与验收条件
+- 功能验收标准
+- 性能验收标准
+- 文档完整性要求
+
+# 用户补充信息
 {userInput}
 
-要求：语言简洁、可落地，避免空泛，文档格式为Markdown，分章节清晰。`,
+# 输出要求
+- Markdown 格式，使用清晰的标题层级
+- 内容务必具体可落地，避免空泛表述
+- 可直接作为项目立项文档使用`,
     },
     {
       promptId: 'coding-prompt-2',
       relatedNodeId: 'coding-node-2',
-      variableList: ['projectName', 'projectVision', 'prevDocs'],
+      variableList: ['projectName', 'projectVision', 'prevDocs', 'userInput'],
       editTime: new Date().toISOString(),
       creator: 'system',
-      promptContent: `结合项目名称【{projectName}】、愿景【{projectVision}】及上一步商业模式文档内容：
+      promptContent: `# 项目背景
+- 项目名称：{projectName}
+- 项目愿景：{projectVision}
+
+# 前置文档
 {prevDocs}
 
-请详细阐述产品全景：
-1. 愿景细节（要解决的核心痛点、最终达成的目标）
-2. 核心价值（区别于其他产品的优势）
-3. 目标用户画像（精准描述，贴合实际使用场景）
-4. 整体核心功能（不拆分多端，仅讲全局功能）
-5. 差异化优势
+# 任务
+基于商业模式文档，生成「产品全景与愿景」文档，全面描绘产品的整体图景。
 
+# 文档要求
+
+## 1. 愿景详述
+- 要解决的核心痛点（具体场景化描述）
+- 最终达成的目标和理想状态
+
+## 2. 核心价值主张
+- 产品独特价值（一句话概括）
+- 与现有方案的差异点
+
+## 3. 目标用户画像
+- 主要用户类型及特征（年龄、职业、技术水平）
+- 典型使用场景
+
+## 4. 核心功能全景
+- 全局功能清单（不拆分多端）
+- 功能优先级标注（P0/P1/P2）
+
+## 5. 差异化竞争优势
+- 至少 3 个明确的差异化亮点
+
+# 用户补充信息
 {userInput}
 
-文档格式为Markdown，逻辑连贯，贴合AI编码落地需求。`,
+# 输出要求
+- Markdown 格式，逻辑连贯
+- 用户画像要精准具体，可直接指导后续设计`,
     },
     {
       promptId: 'coding-prompt-3',
       relatedNodeId: 'coding-node-3',
-      variableList: ['projectName', 'prevDocs'],
+      variableList: ['projectName', 'prevDocs', 'userInput'],
       editTime: new Date().toISOString(),
       creator: 'system',
-      promptContent: `基于项目全景与愿景内容：
+      promptContent: `# 项目背景
+- 项目名称：{projectName}
+
+# 前置文档
 {prevDocs}
 
-请梳理项目核心技术相关内容：
-1. 核心技术亮点（如AI交互、轻量部署、高并发处理等，贴合AI编码场景）
-2. 初步核心技术栈（前端、后端、数据库、AI模型等，可模糊描述，后续步骤细化）
-3. 核心技术难点（如上下文关联、状态统一、多端适配等）
-4. 潜在专利点（若无可写"无"）
+# 任务
+基于产品全景，梳理项目的核心技术方向和技术亮点。
 
+# 文档要求
+
+## 1. 核心技术亮点
+- 列出 3-5 个技术亮点（如 AI 流式交互、实时协作、轻量化部署等）
+- 每个亮点说明技术价值和业务价值
+
+## 2. 初步技术栈方向
+- 前端框架方向
+- 后端框架方向
+- 数据存储方向
+- AI 模型对接方向
+- （本步只做方向性选择，后续步骤细化版本号）
+
+## 3. 核心技术难点分析
+- 列出 Top 3-5 技术难点
+- 每个难点说明挑战所在和初步解决思路
+
+## 4. 潜在专利/创新点
+- 有则列出，无则写"暂无明确专利点"
+
+# 用户补充信息
 {userInput}
 
-文档格式为Markdown，聚焦技术落地，避免冗余。`,
+# 输出要求
+- Markdown 格式，聚焦技术层面
+- 技术选型理由要充分，避免"因为流行所以用"`,
     },
     {
       promptId: 'coding-prompt-4',
       relatedNodeId: 'coding-node-4',
-      variableList: ['prevDocs'],
+      variableList: ['prevDocs', 'userInput', 'currentStates'],
       editTime: new Date().toISOString(),
       creator: 'system',
-      promptContent: `结合前置文档内容中的目标用户画像：
+      promptContent: `# 前置文档
 {prevDocs}
 
-请详细梳理用户与角色体系：
-1. 用户类型（如普通用户、管理员、运营人员等）
-2. 角色划分（对应用户类型，明确每个角色的定位）
-3. 各角色核心权限（细化到操作层面）
-4. 角色关联关系
+# 当前已有状态数据
+{currentStates}
 
+# 任务
+基于产品全景和目标用户画像，详细设计用户与角色权限体系。
+
+# 文档要求
+
+## 1. 用户类型定义
+- 枚举所有用户类型（普通用户、管理员、运营等）
+- 每种类型的定位和特征
+
+## 2. 角色划分
+- 每个角色名称、描述、对应的用户类型
+
+## 3. 权限矩阵
+- 使用表格形式：角色 × 功能模块 × 权限（查看/编辑/删除/管理）
+- 权限粒度要细化到操作级别
+
+## 4. 角色关联关系
+- 角色间的层级或协作关系
+
+## 5. 用户相关状态定义
+请明确列出所有用户相关的状态信息，格式如下：
+- **用户状态**: 待审核、已激活、已禁用、已注销
+- **认证状态**: 未认证、认证中、已认证
+（根据实际业务补充）
+
+# 用户补充信息
 {userInput}
 
-文档格式为Markdown，权限描述清晰，为后续多端产品文档、权限设计奠定基础。请同时输出需要维护的用户相关状态信息。`,
+# 输出要求
+- Markdown 格式，权限描述精确到操作级
+- 状态信息必须明确列出所有可能的状态值
+- 权限矩阵使用 Markdown 表格`,
     },
     {
       promptId: 'coding-prompt-5',
       relatedNodeId: 'coding-node-5',
-      variableList: ['prevDocs', 'userInput'],
+      variableList: ['prevDocs', 'userInput', 'currentStates'],
       editTime: new Date().toISOString(),
       creator: 'system',
-      promptContent: `基于用户与角色体系文档：
+      promptContent: `# 前置文档
 {prevDocs}
 
-用户选择的终端类型为：{userInput}
+# 当前已有状态数据
+{currentStates}
 
-请按每个终端生成独立产品文档：
-1. 终端定位（服务于哪个角色、核心用途）
-2. 核心功能模块（拆分具体功能点，贴合角色权限）
-3. 页面流程（核心页面的跳转逻辑）
-4. 基础交互规范（按钮位置、提示逻辑）
+# 任务
+基于用户角色体系，按终端维度生成多端产品文档。
 
-文档格式为Markdown，每个终端单独成章节，功能描述贴合开发需求。`,
+# 用户选择的终端类型
+{userInput}
+
+# 文档要求（每个终端独立章节）
+
+## 每个终端需包含：
+
+### 终端定位
+- 服务于哪个角色
+- 核心使用场景
+
+### 核心功能模块
+- 模块名称 + 包含的功能点
+- 每个功能点标注优先级（P0/P1/P2）
+
+### 页面流程
+- 核心页面列表
+- 关键页面跳转逻辑（用文字流程描述）
+
+### 交互规范
+- 关键交互说明（表单提交、列表操作、状态切换等）
+- 异常状态处理
+
+# 输出要求
+- Markdown 格式，每个终端用一级标题区分
+- 功能描述精确到开发可直接实现的程度
+- 如果用户未指定终端类型，请根据角色体系自动推断合理的终端划分`,
     },
     {
       promptId: 'coding-prompt-6',
       relatedNodeId: 'coding-node-6',
-      variableList: ['prevDocs'],
+      variableList: ['prevDocs', 'userInput', 'currentStates', 'currentTables'],
       editTime: new Date().toISOString(),
       creator: 'system',
-      promptContent: `结合多端产品文档：
+      promptContent: `# 前置文档
 {prevDocs}
 
-请梳理核心数据相关内容：
-1. 核心数据模型（如用户模型、订单模型，对应各端功能）
-2. 初步核心表结构（表名、核心字段、字段类型、备注）
-3. 数据流转逻辑（如"用户注册→数据存入用户表→更新用户状态"）
-4. 核心业务工作流（用流程描述核心业务逻辑）
+# 当前已有状态数据
+{currentStates}
 
+# 当前已有表结构
+{currentTables}
+
+# 任务
+基于多端产品文档和角色权限，设计完整的数据模型和核心业务工作流。
+
+# 文档要求
+
+## 1. 核心数据模型概览
+- 列出所有核心实体及其关系（如用户、项目、订单等）
+
+## 2. 数据库表结构设计
+对每个核心表，使用以下 Markdown 表格格式：
+
+### 表名（表说明）
+| 字段名 | 类型 | 约束 | 说明 |
+|--------|------|------|------|
+| id | BIGINT | 必填,主键 | 自增主键 |
+| ... | ... | ... | ... |
+
+**要求：**
+- 类型使用标准数据库类型（VARCHAR, INT, BIGINT, TEXT, BOOLEAN, DATETIME, JSON, DECIMAL）
+- 约束标注：必填/可选、主键、外键、唯一等
+- 每个表至少包含 id, created_at, updated_at 字段
+
+## 3. 数据流转逻辑
+- 使用步骤化描述（如 "用户注册 → 写入 users 表 → 状态设为'待审核' → 发送验证邮件"）
+
+## 4. 核心业务工作流
+- 描述 3-5 个核心业务流程
+- 每个流程标注涉及的数据表和状态变更
+
+## 5. 状态汇总
+将文档中涉及的所有业务状态汇总列出：
+- **XXX状态**: 值1、值2、值3
+
+# 用户补充信息
 {userInput}
 
-文档格式为Markdown，表结构清晰，数据流转贴合业务。请明确列出所有核心表及字段详情，以及所有需要维护的业务状态。`,
+# 输出要求
+- 所有表结构必须使用 Markdown 表格
+- 状态信息必须明确列出
+- 表设计要考虑扩展性`,
     },
     {
       promptId: 'coding-prompt-7',
       relatedNodeId: 'coding-node-7',
-      variableList: ['prevDocs'],
+      variableList: ['prevDocs', 'userInput', 'currentStates'],
       editTime: new Date().toISOString(),
       creator: 'system',
-      promptContent: `基于核心技术与数据模型文档：
+      promptContent: `# 前置文档
 {prevDocs}
 
-请梳理AI相关内容：
-1. 项目所用AI能力（如文档生成、代码生成、需求校验等）
-2. AI算法选型（若有，如分类算法、生成算法，无可写"无，依赖第三方AI模型"）
-3. AI交互逻辑（如"用户输入→系统生成提示词→调用AI→返回结果→用户修改"）
-4. AI输出规范（如文档格式、代码风格、命名规范）
+# 当前已有状态数据
+{currentStates}
 
+# 任务
+基于技术方向和数据模型，设计 AI 能力层的完整方案。
+
+# 文档要求
+
+## 1. AI 能力清单
+- 列出项目所有 AI 能力（文档生成、代码生成、智能推荐、需求校验等）
+- 每个能力标注使用场景和优先级
+
+## 2. AI 模型选型
+- 推荐的 AI 模型和提供商
+- 选型理由（成本、效果、延迟、API 兼容性等）
+- 若无自研算法，注明"依赖第三方大模型 API"
+
+## 3. AI 交互设计
+- 完整的交互流程：用户输入 → 提示词构建 → API 调用 → 流式返回 → 后处理
+- 上下文管理策略
+- 错误处理和降级方案
+
+## 4. AI 输出规范
+- 文档类输出的格式规范
+- 代码类输出的风格规范
+- 数据类输出的结构规范
+
+## 5. 提示词工程方案
+- 提示词模板的管理策略
+- 变量注入机制
+- 提示词版本管理
+
+# 用户补充信息
 {userInput}
 
-文档格式为Markdown，聚焦AI与业务的结合。`,
+# 输出要求
+- Markdown 格式，技术方案要可落地
+- AI 交互流程要细化到可编码实现`,
     },
     {
       promptId: 'coding-prompt-8',
       relatedNodeId: 'coding-node-8',
-      variableList: ['prevDocs'],
+      variableList: ['prevDocs', 'userInput', 'currentStates'],
       editTime: new Date().toISOString(),
       creator: 'system',
-      promptContent: `基于多端产品文档与核心业务工作流：
+      promptContent: `# 前置文档
 {prevDocs}
 
-请明确MVP范围与迭代路线：
-1. MVP核心功能范围（必做功能列表，贴合落地，不贪多）
-2. MVP不做的功能（明确排除项，避免冗余）
-3. MVP上线时间预估（合理预估）
-4. 迭代优先级（核心功能→优化功能→附加功能）
-5. 后续迭代计划（2-3轮迭代的核心目标）
+# 当前已有状态数据
+{currentStates}
 
+# 任务
+基于全部产品和技术文档，制定 MVP 范围和迭代路线。
+
+# 文档要求
+
+## 1. MVP 必做功能清单
+- 使用表格：功能名称 | 所属模块 | 优先级 | 预估工作量
+- 只列入满足核心用户核心场景的最小功能集
+
+## 2. MVP 不做功能清单
+- 明确排除的功能及排除理由
+
+## 3. MVP 上线时间预估
+- 基于功能量和团队规模的合理估算
+- 关键里程碑节点
+
+## 4. 迭代优先级
+- P0: MVP 核心（必须首批完成）
+- P1: 体验优化（第二轮迭代）
+- P2: 附加功能（第三轮及以后）
+
+## 5. 迭代路线图
+- V1.0: MVP 核心功能（描述 + 时间）
+- V1.1: 体验优化（描述 + 时间）
+- V2.0: 重大功能升级（描述 + 时间）
+
+# 用户补充信息
 {userInput}
 
-文档格式为Markdown，逻辑清晰，可落地。`,
+# 输出要求
+- Markdown 格式，功能粒度到可分配开发任务的程度
+- 时间预估要合理，避免过于乐观`,
     },
     {
       promptId: 'coding-prompt-9',
       relatedNodeId: 'coding-node-9',
-      variableList: ['prevDocs'],
+      variableList: ['prevDocs', 'userInput', 'currentStates', 'currentTables'],
       editTime: new Date().toISOString(),
       creator: 'system',
-      promptContent: `基于核心技术、AI能力与MVP范围文档：
+      promptContent: `# 前置文档
 {prevDocs}
 
-请明确完整技术选型与实现说明：
-1. 前端技术栈（框架、UI库、版本号）
-2. 后端技术栈（框架、版本号）
-3. 数据库选型（说明选型理由）
-4. AI模型选型（说明适配理由）
-5. 部署环境（说明部署方案）
-6. 各技术实现难点及初步解决方案
+# 当前已有状态数据
+{currentStates}
 
+# 当前已有表结构
+{currentTables}
+
+# 任务
+基于 AI 能力方案和 MVP 范围，确定完整的技术选型并说明实现方案。
+
+# 文档要求
+
+## 1. 前端技术栈
+- 框架 + 版本号（如 React 18.3 + TypeScript 5.x）
+- UI 组件库 + 版本号
+- 状态管理方案
+- 路由方案
+- 构建工具
+
+## 2. 后端技术栈
+- 框架 + 版本号
+- API 风格（RESTful / GraphQL）
+- 认证方案
+
+## 3. 数据库选型
+- 数据库类型和版本
+- 选型理由（与数据模型步骤的表结构对齐）
+- ORM / 数据访问层
+
+## 4. AI 模型对接
+- 具体 API 提供商和模型版本
+- SDK 或 HTTP 直接调用
+- 流式响应处理方案
+
+## 5. 部署方案
+- 开发环境 / 测试环境 / 生产环境
+- CI/CD 方案
+- 域名和 HTTPS
+
+## 6. 技术难点与解决方案
+- 列出 Top 5 技术挑战及具体解决思路
+
+# 用户补充信息
 {userInput}
 
-文档格式为Markdown，技术选型贴合TS快速开发，理由充分，可直接用于编码。`,
+# 输出要求
+- 每个技术选型必须注明版本号
+- 选型理由要充分，不能只说"流行"
+- 方案要可直接用于项目初始化`,
     },
     {
       promptId: 'coding-prompt-10',
       relatedNodeId: 'coding-node-10',
-      variableList: ['prevDocs'],
+      variableList: ['prevDocs', 'userInput', 'currentStates', 'currentTables'],
       editTime: new Date().toISOString(),
       creator: 'system',
-      promptContent: `基于技术选型文档：
+      promptContent: `# 前置文档
 {prevDocs}
 
-请详细阐述技术架构与实现方案：
-1. 整体技术架构（前端层→接口层→服务层→数据层→AI交互层）
-2. 各层核心职责（明确每层的功能、依赖关系）
-3. 核心接口设计（接口地址、请求方式、参数、返回值）
-4. 部署方案（详细步骤，简单易懂）
-5. 运行说明（本地运行、线上运行的步骤，排查常见问题）
+# 当前已有状态数据
+{currentStates}
 
+# 当前已有表结构
+{currentTables}
+
+# 任务
+基于技术选型，输出完整的技术架构设计和实现方案，作为开发的最终技术蓝图。
+
+# 文档要求
+
+## 1. 整体架构设计
+- 分层架构图描述（前端层 → API 接口层 → 业务服务层 → 数据访问层 → AI 交互层）
+- 各层职责和依赖关系
+
+## 2. 目录结构设计
+- 前端项目目录结构（到二级目录）
+- 后端项目目录结构（到二级目录）
+
+## 3. 核心 API 接口设计
+使用表格格式：
+| 接口路径 | 方法 | 说明 | 请求参数 | 返回数据 |
+列出所有 MVP 核心接口
+
+## 4. 数据库实施方案
+- 完整的建表 SQL 或 ORM 模型定义
+- 索引策略
+- 与等待区表结构保持一致
+
+## 5. 部署实施方案
+- 详细的部署步骤（step by step）
+- 环境变量配置清单
+- 常见问题排查
+
+## 6. 本地开发运行说明
+- 环境要求
+- 安装步骤
+- 启动命令
+- 访问地址
+
+# 用户补充信息
 {userInput}
 
-文档格式为Markdown，架构清晰，部署/运行步骤可直接操作，完成MVP落地闭环。`,
+# 输出要求
+- 这是整个工作流的最终文档，必须完整闭环
+- API 设计与前面的功能模块一一对应
+- 部署步骤要一步步可操作
+- 表结构必须与数据模型步骤保持一致`,
     },
   ],
   waitAreas: [
