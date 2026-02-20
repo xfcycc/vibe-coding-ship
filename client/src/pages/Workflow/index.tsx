@@ -22,8 +22,9 @@ import {
 } from '../../services/aiDirect';
 import { configStorage } from '../../services/storage';
 import WaitingAreaPanel from '../../components/WaitingArea/WaitingAreaPanel';
-import DiffViewerComponent from '../../components/DiffViewer/DiffViewerComponent';
+import ChunkDiffReview from '../../components/DiffViewer/ChunkDiffReview';
 import ReactDiffViewer, { DiffMethod } from 'react-diff-viewer-continued';
+import MarkdownSplitEditor from '../../components/MarkdownEditor/MarkdownSplitEditor';
 import { exportProjectAsZip, exportSingleDoc } from '../../utils/export';
 import { extractStates, extractTables } from '../../utils/docExtractor';
 import { injectStatesIntoDoc, injectTablesIntoDoc, buildDocMergePrompt } from '../../utils/docInjector';
@@ -466,23 +467,23 @@ const WorkflowPage: React.FC = () => {
     );
   };
 
-  const handleAcceptNew = () => {
+  const handleAcceptNew = (finalContent?: string) => {
     if (!currentNode) return;
-    const newVersion = { versionId: uuidv4(), content: newContent, createdAt: new Date().toISOString(), source: 'ai' as const };
+    const contentToSave = finalContent ?? newContent;
+    const newVersion = { versionId: uuidv4(), content: contentToSave, createdAt: new Date().toISOString(), source: 'ai' as const };
     const versions = [...(currentDoc?.versions || []), newVersion].slice(-5);
     dispatch({
       type: 'UPDATE_DOCUMENT',
       payload: {
         nodeId: currentNode.nodeId,
-        updates: { content: newContent, versions, currentVersionIndex: versions.length - 1 },
+        updates: { content: contentToSave, versions, currentVersionIndex: versions.length - 1 },
       },
     });
-    // Mark subsequent docs as needing regeneration (P6 backtrack)
     dispatch({ type: 'MARK_NEEDS_REGENERATION', payload: { fromStep: currentStep } });
     setShowDiff(false);
     setNewContent('');
     setOldContent('');
-    message.success('已接受新内容');
+    message.success('已应用修改');
   };
 
   const handleKeepOld = () => {
@@ -877,14 +878,14 @@ const WorkflowPage: React.FC = () => {
           </div>
         )}
 
-        {/* Diff View */}
+        {/* Chunk Diff Review */}
         {showDiff && (
           <div style={{ padding: '12px 20px', background: '#fff8f0', borderBottom: '1px solid #ffd591' }}>
-            <DiffViewerComponent
+            <ChunkDiffReview
               oldContent={oldContent}
               newContent={newContent}
-              onAccept={handleAcceptNew}
-              onReject={handleKeepOld}
+              onFinish={(result) => handleAcceptNew(result)}
+              onCancel={handleKeepOld}
             />
           </div>
         )}
@@ -956,12 +957,11 @@ const WorkflowPage: React.FC = () => {
               }
             >
               {isEditMode ? (
-                <Input.TextArea
+                <MarkdownSplitEditor
                   value={editContent}
-                  onChange={e => setEditContent(e.target.value)}
+                  onChange={setEditContent}
+                  minRows={20}
                   placeholder="在此编辑 Markdown 文档..."
-                  autoSize={{ minRows: 20, maxRows: 60 }}
-                  style={{ fontFamily: 'ui-monospace, monospace', fontSize: 14 }}
                 />
               ) : (
                 <div className={`markdown-body ${isStreaming && currentPhase === 'generating' ? 'streaming-cursor' : ''}`}>
